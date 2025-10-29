@@ -9,6 +9,8 @@
 // @grant        GM_getResourceText
 // @run-at       document-end
 // @require      https://cdn.jsdelivr.net/npm/papaparse@5.5.3/papaparse.min.js
+// @downloadURL  https://github.com/gmartins-tp/scripts/raw/refs/heads/main/odiflegmap.user.js
+// @updateURL    https://github.com/gmartins-tp/scripts/raw/refs/heads/main/odiflegmap.user.js
 // ==/UserScript==
 
 (function () {
