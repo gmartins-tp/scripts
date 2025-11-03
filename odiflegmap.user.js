@@ -18,6 +18,8 @@
 
     //test change
 
+    var gggg_test = 0;
+
     /*************************
      * Configuration & State
      *************************/
