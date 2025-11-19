@@ -4,7 +4,7 @@
 // @version      1.0
 // @author       Gil Martins
 // @description  Draw lines & parallel lines on any webpage — L (line), P (parallel), S (New parallel line), Z (revert one back), X (clear), Esc (cancel)
-// @match        https://prod-rm.tp.proscloud.com/market/forecast/*/*/historical-forecast*
+// @match       https://prod-rm.tp.proscloud.com/market/forecast/*
 // @grant        GM_addStyle
 // @downloadURL  https://github.com/gmartins-tp/scripts/raw/refs/heads/main/chart_line_renderer.user.js
 // @updateURL    https://github.com/gmartins-tp/scripts/raw/refs/heads/main/chart_line_renderer.user.js
@@ -12,17 +12,50 @@
 
 (function() {
 
-    GM_addStyle(`
-        .highcharts-tooltip-container{
-            position: fixed !important;
-            top: 0px !important;
-            left:0px !important;
-        }
+    let styleElement = null;
+    let lastUrl = null;
 
-        .rm-container-historical-forecast-body{
-            position:relative !important;
+    function applyStyles() {
+        if (!styleElement) {
+            styleElement = document.createElement("style");
+            styleElement.id = "my-style-fix";
+            styleElement.textContent = `
+                .highcharts-tooltip-container {
+                    position: fixed !important;
+                    top: 0px !important;
+                    left: 0px !important;
+                }
+                .rm-container-historical-forecast-body {
+                    position: relative !important;
+                }
+            `;
+            document.head.appendChild(styleElement);
         }
-    `)   
+    }
+
+    function removeStyles() {
+        if (styleElement) {
+            styleElement.remove();
+            styleElement = null;
+        }
+    }
+
+    // Check URL changes
+    setInterval(() => {
+
+        if (location.href !== lastUrl) {
+            lastUrl = location.href;
+
+            if (location.href.includes("/historical-forecast")) {
+                removeStyles();
+                applyStyles();    // inject styles if URL matches
+            } else {
+                removeStyles();   // remove styles if URL doesn't match
+            }
+        }
+    }, 500);
+
+    //end add styles
 
   function adjustTooltip() {
     const el = document.querySelector('.highcharts-tooltip-container');
