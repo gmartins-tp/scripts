@@ -4,7 +4,7 @@
 // @version      1.0
 // @author       Gil Martins
 // @description  Draw vertical lines at x-axis ticks for Highcharts inside React apps
-// @match        https://prod-rm.tp.proscloud.com/market/forecast/*/*/historical-forecast
+// @match        https://prod-rm.tp.proscloud.com/market/forecast/*/*/historical-forecast*
 // @grant        none
 // @downloadURL  https://github.com/gmartins-tp/scripts/raw/refs/heads/main/react_vertical_lines.user.js
 // @updateURL    https://github.com/gmartins-tp/scripts/raw/refs/heads/main/react_vertical_lines.user.js
