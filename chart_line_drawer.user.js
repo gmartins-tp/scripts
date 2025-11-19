@@ -2,13 +2,13 @@
 // @name         Chart Line Drawer (L, P, X, Esc)
 // @namespace    http://tampermonkey.net/
 // @version      1.0
+// @author       Gil Martins
 // @description  Draw lines & parallel lines on any webpage — L (line), P (parallel), S (New parallel line), Z (revert one back), X (clear), Esc (cancel)
-// @match        *://*/*
+// @match        https://prod-rm.tp.proscloud.com/market/forecast/*
 // @grant        GM_addStyle
 // @downloadURL  https://github.com/gmartins-tp/scripts/raw/refs/heads/main/chart_line_drawer.user.js
 // @updateURL    https://github.com/gmartins-tp/scripts/raw/refs/heads/main/chart_line_drawer.user.js
 // ==/UserScript==
-
 
 (function() {
 
