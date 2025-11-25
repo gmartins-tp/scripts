@@ -4,7 +4,7 @@
 // @version      1.0
 // @author       Gil Martins
 // @description  Draw lines & parallel lines on any webpage — L (line), P (parallel), S (New parallel line), Z (revert one back), X (clear), Esc (cancel)
-// @match       https://prod-rm.tp.proscloud.com/market/forecast/*
+// @match        https://prod-rm.tp.proscloud.com/market/forecast/*
 // @grant        GM_addStyle
 // @grant        unsafeWindow
 // @downloadURL  https://github.com/gmartins-tp/scripts/raw/refs/heads/main/chart_line_renderer.user.js
