@@ -197,7 +197,9 @@
               var estimatedY3 = val1 - val0
 
               if (is_k){
-                estimatedY3 = Math.round(estimatedY3*1000)
+                estimatedY3 = Math.round(estimatedY3*1000);
+                val0 = val0+'k' 
+                val1 = val1+'k'
               }
 
               var ss = "<b>Calculated Multiplicative Influence</b><br>"+val0+" -> "+val1+":  "+estimatedY2.toFixed(2)
