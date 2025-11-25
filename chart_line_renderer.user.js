@@ -145,7 +145,7 @@
     });
 
     // helper
-    function drawLineOnCanvas(a,b) {
+    function drawLineOnCanvas(a,b, dashed=false) {
         const dx = b.x - a.x;
         const dy = b.y - a.y;
         const slope = dy / dx;
@@ -163,6 +163,12 @@
         ctx.beginPath();
         ctx.moveTo(55, y0);
         ctx.lineTo(endX, yMax);
+
+        if (dashed){
+            ctx.setLineDash([8, 4]);
+        }else{
+            ctx.setLineDash([]);
+        }        
         ctx.stroke();
     }
     
@@ -173,7 +179,7 @@
         points.push({ x: e.clientX, y: e.clientY });
 
         if (mode === "line" && points.length === 2) {
-            drawLine(points[0], points[1]);
+            drawLine(points[0], points[1], true);
             mode = null; points = [];
             restoreTooltip();
         }
@@ -193,8 +199,8 @@
         }
     });
 
-    function drawLine(a,b) {
-        drawLineOnCanvas(a,b); // actually draw
+    function drawLine(a,b, dashed=false) {
+        drawLineOnCanvas(a,b, dashed); // actually draw
 
         lastLine = {a,b};
         drawnLines.push({a,b});
