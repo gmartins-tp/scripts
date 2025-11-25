@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Influence Calculator
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @description  For lazy people - Calculates the influence needed between two points!
 // @author       Gil Martins
 // @run-at       document-start
@@ -194,7 +194,7 @@
               var val1 = convert_to_scale(CLICK_LIST[1], vls).toFixed(2)
               
               var estimatedY2 = val1/val0
-              var estimatedY3 = val1 - val0
+              var estimatedY3 = Math.round(val1 - val0)
 
               if (is_k){
                 estimatedY3 = Math.round(estimatedY3*1000);
