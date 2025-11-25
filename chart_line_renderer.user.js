@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Chart Line Renderer (L, P, X, Esc)
 // @namespace    http://tampermonkey.net/
-// @version      1.0
+// @version      1.1
 // @author       Gil Martins
 // @description  Draw lines & parallel lines on any webpage — L (line), P (parallel), S (New parallel line), Z (revert one back), X (clear), Esc (cancel)
 // @match        https://prod-rm.tp.proscloud.com/market/forecast/*
