@@ -79,6 +79,9 @@
 
     // Restore tooltip with 100ms delay
     function restoreTooltip() {
+
+        unsafeWindow.block_other_scripts_because_of_line_plot = false
+        
         const t = document.querySelector('.highcharts-tooltip-container');
         if(t) setTimeout(() => { t.style.display = ''; }, 100);
     }
@@ -133,6 +136,10 @@
                 redrawAllLines();   // redraw remaining
                 lastLine = drawnLines[drawnLines.length-1] || null;
             }
+        }
+
+        if (['L', 'P', 'S',  ].indexOf(e.key) >= 0){
+            unsafeWindow.block_other_scripts_because_of_line_plot = true;
         }
     });
 
