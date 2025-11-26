@@ -158,8 +158,8 @@
 
         CLICK_LIST.push(clamped)
 
-        console.log("............")
-        console.log(CLICK_LIST)
+        //console.log("............")
+        //console.log(CLICK_LIST)
 
         showMarker(container, e.clientX - rect.left, relY, convert_to_scale(clamped, vls));
 
