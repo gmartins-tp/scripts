@@ -203,7 +203,7 @@
               }
 
               var ss = "<b>Calculated Multiplicative Influence</b><br>"+val0+" -> "+val1+":  "+estimatedY2.toFixed(2)
-              ss += "<br>-------<br><b>Calculated Additive Influence</b><br>"+val0+" -> "+val1+":  "+estimatedY3
+              //ss += "<br>-------<br><b>Calculated Additive Influence</b><br>"+val0+" -> "+val1+":  "+estimatedY3
 
               myDiv.innerHTML = ss
 
