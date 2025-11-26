@@ -14,7 +14,26 @@
 (function() {
     'use strict';
 
+    var is_historical = false;
+    let lastUrl = null;
+    // Check URL changes
+    setInterval(() => {
+
+        if (location.href !== lastUrl) {
+            lastUrl = location.href;
+
+            if (location.href.includes("/historical-forecast")) {
+                is_historical = true
+            } else {
+               is_historical = false
+            }
+        }
+    }, 500);
+
     function drawLines() {
+
+        if (is_historical == false) return;
+        
         // Find all Highcharts containers
         const charts = document.querySelectorAll('.highcharts-container');
         charts.forEach(container => {
@@ -67,6 +86,9 @@
     
 
         function shadeYears() {
+
+            if (is_historical == false) return;
+            
             const svg = document.querySelector('svg.highcharts-root');
             if (!svg) {
             // no chart yet
@@ -185,6 +207,9 @@
 
         // Run once on load
         function bumpStrokeWidth() {
+
+            if (is_historical == false) return;
+            
             // Query all path elements under highcharts-series groups
             const paths = document.querySelectorAll('.highcharts-series path');
             paths.forEach(path => {
