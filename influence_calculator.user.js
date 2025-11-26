@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Influence Calculator
 // @namespace    http://tampermonkey.net/
-// @version      1.1
+// @version      1.2
 // @description  For lazy people - Calculates the influence needed between two points!
 // @author       Gil Martins
 // @run-at       document-start
