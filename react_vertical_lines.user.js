@@ -115,7 +115,7 @@
             let bands = [];
 
             const labels = Array.from(svg.querySelectorAll('g.highcharts-axis-labels.highcharts-xaxis-labels text'));
-            console.log(labels)
+            //console.log(labels)
             labels.forEach((txt, i) => {
                 const yearMatch = parseInt(txt.innerHTML.match(/(\d+)$/)[0])
                 if (yearMatch) {
