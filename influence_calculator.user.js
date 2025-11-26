@@ -1,10 +1,10 @@
 // ==UserScript==
 // @name         Influence Calculator
 // @namespace    http://tampermonkey.net/
-// @version      1.3
+// @version      1.4
 // @description  For lazy people - Calculates the influence needed between two points!
 // @author       Gil Martins
-// @run-at       document-start
+// @run-at       document-ready
 // @match        https://prod-rm.tp.proscloud.com/market/forecast/*
 // @grant        unsafeWindow
 // @downloadURL  https://github.com/gmartins-tp/scripts/raw/refs/heads/main/influence_calculator.user.js
