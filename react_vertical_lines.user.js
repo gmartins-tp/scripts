@@ -119,29 +119,30 @@
             
             labels.forEach((txt, i) => {
                 const yearMatch = parseInt(txt.innerHTML.match(/(\d+)$/)[0])
-                
-                if(i==0){
-                    let month = txt.innerHTML.substring(0,3);
-                    if (month != "Jan"){
-                        const yr = +yearMatch;
-                        bands.push({ x1: 40, yr });
-                    }
-                }
 
                 if (yearMatch) {
+                
+                    if(i==0){
+                        let month = txt.innerHTML.substring(0,3);
+                        if (month != "Jan"){
+                            const yr = +yearMatch;
+                            bands.push({ x1: 40, yr });
+                        }
+                    }   
+                    
                     const yr = +yearMatch;
                     const x = +txt.getAttribute('x');
-                    bands.push({ x1: x, yr });
-                }
-
-                if(i == len_labels-1){
-                    let month = txt.innerHTML.substring(0,3);
-                    const yr = +yearMatch;
-                    if (i > 2){
-                        if (bands[bands.length -2].yr == bands[bands.length - 1].yr || (month == "Jan" || month == "Fev")){
-                            bands.push({ x1: parseInt(svg.getAttribute("width"))-10, yr }); 
-                        }
-                    } 
+                    bands.push({ x1: x, yr });                    
+    
+                    if(i == len_labels-1){
+                        let month = txt.innerHTML.substring(0,3);
+                        const yr = +yearMatch;
+                        if (i > 2){
+                            if (bands[bands.length -2].yr == bands[bands.length - 1].yr || (month == "Jan" || month == "Fev")){
+                                bands.push({ x1: parseInt(svg.getAttribute("width"))-10, yr }); 
+                            }
+                        } 
+                    }
                 }
             });            
 
