@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Influence Calculator
 // @namespace    http://tampermonkey.net/
-// @version      1.4
+// @version      1.5
 // @description  For lazy people - Calculates the influence needed between two points!
 // @author       Gil Martins
 // @run-at       document-ready
@@ -24,6 +24,9 @@
 
         if (location.href.includes("/historical-forecast")) {
             LOCK_DRAW = false
+        }else  if (location.href.includes("/traffic-mix")) {
+            LOCK_DRAW = false
+        
         } else {
             LOCK_DRAW = true
         }
@@ -170,6 +173,7 @@
 
             // Find the target element
             const target = document.querySelector('.rm-measure-view-component');
+            const target_2 = document.querySelector('.legend-box')
             if (target) {
 
               const EXISTING_ID = 'influence-injected-div';
@@ -188,6 +192,43 @@
                 myDiv.style.lineHeight = '20px';
                 myDiv.style.border = '1px solid #ccc'
                 target.after(myDiv);
+              }
+
+              var val0 = convert_to_scale(CLICK_LIST[0], vls).toFixed(2)
+              var val1 = convert_to_scale(CLICK_LIST[1], vls).toFixed(2)
+              
+              var estimatedY2 = val1/val0
+              var estimatedY3 = Math.round(val1 - val0)
+
+              if (is_k){
+                estimatedY3 = Math.round(estimatedY3*1000);
+                val0 = val0+'k' 
+                val1 = val1+'k'
+              }
+
+              var ss = "<b>Calculated Multiplicative Influence</b><br>"+val0+" -> "+val1+":  "+estimatedY2.toFixed(2)
+              //ss += "<br>-------<br><b>Calculated Additive Influence</b><br>"+val0+" -> "+val1+":  "+estimatedY3
+
+              myDiv.innerHTML = ss
+
+            }
+            else if (target_2) {
+               const EXISTING_ID = 'influence-injected-div';
+
+              // Try to find if the div already exists
+              let myDiv = document.getElementById(EXISTING_ID);
+
+              if (!myDiv) {
+                // If not, create it
+                myDiv = document.createElement('div');
+                myDiv.id = EXISTING_ID;
+                myDiv.style.background = '#fff';
+                myDiv.style.marginTop = '10px';
+                myDiv.style.textAlign = 'center'; 
+                myDiv.style.padding = '10px';
+                myDiv.style.lineHeight = '20px';
+                myDiv.style.border = '1px solid #ccc'
+                target_2.after(myDiv);
               }
 
               var val0 = convert_to_scale(CLICK_LIST[0], vls).toFixed(2)
