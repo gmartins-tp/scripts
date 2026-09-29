@@ -50,6 +50,9 @@
             if (location.href.includes("/historical-forecast")) {
                 removeStyles();
                 applyStyles();    // inject styles if URL matches
+            }else if(location.href.includes("/traffic-mix")) {
+                removeStyles();
+                applyStyles();    // inject styles if URL matches
             } else {
                 removeStyles();   // remove styles if URL doesn't match
             }
