@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Influence Calculator
 // @namespace    http://tampermonkey.net/
-// @version      1.5
-// @description  For lazy people - Calculates the influence needed between two points!
+// @version      1.6
+// @description  Calculates the influence needed between two points!
 // @author       Gil Martins
 // @run-at       document-ready
 // @match        https://prod-rm.tp.proscloud.com/market/forecast/*
@@ -172,7 +172,7 @@
         else{
 
             // Find the target element
-            const target = document.querySelector('.rm-measure-view-component');
+            const target = document.querySelector('.rm-container-legend-section .rm-measure-view-component');
             const target_2 = document.querySelector('.legend-box')
             if (target) {
 
