@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Counter Forecasts - AI
 // @namespace    http://tampermonkey.net/
-// @version      3.2.2
+// @version      4.2.2
 // @description  Counter Forecasts — v3.2 (MSTL + Box-Cox + bias correction + unrealistic-forecast filter)
 // @author       Gil Martins
 // @match        https://prod-rm.tp.proscloud.com/market/forecast/*
@@ -311,7 +311,11 @@
       '.fc-info{background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:8px 14px;border-radius:6px;font-size:12px}',
       '.fc-info b{color:#78350f}',
       '.fc-feature-tag{display:inline-block;padding:2px 8px;margin-left:6px;border-radius:10px;background:#eef2ff;color:#3730a3;font-size:10px;font-weight:600;letter-spacing:.3px}',
-      '.fc-inject{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #9334e6;border-radius:2px;font-size:13px;font-weight:500;color:#9334e6;background:#fff;cursor:pointer;margin:8px 12px;user-select:none;width:100%;transition:background .15s,box-shadow .15s,transform .1s}',
+      `.fc-inject{display:inline-flex;align-items:center;gap:6px;padding:6px 14px;border:1px solid #9334e6;border-radius:2px;font-size:13px;font-weight:500;color:#9334e6;background:#fff;cursor:pointer;margin:8px 12px;user-select:none;width:94%;transition:background .15s,box-shadow .15s,transform .1s,;    height: 40px;
+    border-radius: 4px;
+    background: #eee !important;
+    color: #111 !important;
+    font-weight: bold;}`,
       '.fc-inject:hover{background:#f3e8ff;transform:translateY(-1px);box-shadow:0 3px 10px rgba(0,0,0,.15)}',
       '.fc-inject.loading{opacity:.5;pointer-events:none}'
     ].join('\n');
@@ -329,7 +333,10 @@
       parts[0], parts[1], {skipDownload: true}
     );
 
-    var sql = 'SELECT a.[Departure Date], a.[Final Alpha Seasonal], a.[Final Lambda Seasonal], ' +
+    var sql = `SELECT 
+        a.[Departure Date], 
+        CASE WHEN a.[Final Alpha Seasonal] = 0 THEN a.[Alpha] ELSE a.[Final Alpha Seasonal] END AS [Final Alpha Seasonal],
+        CASE WHEN a.[Final Lambda Seasonal] = 0 THEN a.[Lambda] ELSE a.[Final Lambda Seasonal] END AS [Final Lambda Seasonal], ` +
       'a.[Final Alpha Influenced], a.[Final Lambda Influenced], ' +
       'a.[Departure Time], a.dcp as DCP ' +
       'FROM CSV(?, {headers:true}) AS a ' +
@@ -1489,23 +1496,114 @@
     btn.onclick = function () { onClick(btn); };
     target.parentNode.insertBefore(btn, target.nextSibling);
   }
+//--------------
+var routeObserver = null;
+var lastUrl = '';
 
-  function init() {
-    document.querySelectorAll('.rm-container-historical-forecast-body .rm-measure-view-component')
-      .forEach(injectButtons);
-    new MutationObserver(function (muts) {
-      muts.forEach(function (m) {
-        m.addedNodes.forEach(function (node) {
-          if (!(node instanceof HTMLElement)) return;
-          if (node.matches && node.matches('.rm-container-historical-forecast-body .rm-measure-view-component'))
-            injectButtons(node);
-          if (node.querySelectorAll)
-            node.querySelectorAll('.rm-measure-view-component').forEach(injectButtons);
-        });
+function isHistoricalForecastRoute() {
+  return /\/historical-forecast\/?$/.test(location.pathname);
+}
+
+function removeInjectedUi() {
+  // Fecha o modal, se estiver aberto.
+  document.querySelectorAll('.fc-overlay').forEach(function (el) {
+    el.remove();
+  });
+
+  // Remove os botões injetados.
+  document.querySelectorAll('.fc-inject').forEach(function (el) {
+    el.remove();
+  });
+
+  // Permite reinjetar o botão se regressarmos à página.
+  document.querySelectorAll('[' + INJECTED + ']').forEach(function (el) {
+    el.removeAttribute(INJECTED);
+  });
+}
+
+function scanAndInject() {
+  if (!isHistoricalForecastRoute()) return;
+
+  document
+    .querySelectorAll(
+      '.rm-container-historical-forecast-body .rm-container-legend-section .rm-measure-view-component'
+    )
+    .forEach(injectButtons);
+}
+
+function startRouteObserver() {
+  if (routeObserver) return;
+
+  routeObserver = new MutationObserver(function (mutations) {
+    if (!isHistoricalForecastRoute()) return;
+
+    mutations.forEach(function (mutation) {
+      mutation.addedNodes.forEach(function (node) {
+        if (!(node instanceof HTMLElement)) return;
+
+        if (
+          node.matches &&
+          node.matches(
+            '.rm-container-historical-forecast-body .rm-container-legend-section .rm-measure-view-component'
+          )
+        ) {
+          injectButtons(node);
+        }
+
+        if (node.querySelectorAll) {
+          node
+            .querySelectorAll(
+              '.rm-container-historical-forecast-body .rm-container-legend-section .rm-measure-view-component'
+            )
+            .forEach(injectButtons);
+        }
       });
-    }).observe(document.body, {childList: true, subtree: true});
-  }
+    });
+  });
 
-  if (document.body) init();
-  else document.addEventListener('DOMContentLoaded', init);
+  routeObserver.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+}
+
+function stopRouteObserver() {
+  if (!routeObserver) return;
+
+  routeObserver.disconnect();
+  routeObserver = null;
+}
+
+function handleRouteChange() {
+  var currentUrl = location.href;
+
+  if (currentUrl === lastUrl) return;
+  lastUrl = currentUrl;
+
+  if (isHistoricalForecastRoute()) {
+    startRouteObserver();
+
+    // O React pode ainda não ter terminado de renderizar a nova rota.
+    scanAndInject();
+    setTimeout(scanAndInject, 250);
+    setTimeout(scanAndInject, 750);
+  } else {
+    stopRouteObserver();
+    removeInjectedUi();
+  }
+}
+
+function init() {
+  lastUrl = '';
+  handleRouteChange();
+
+  // Fallback para navegação dinâmica do React.
+  setInterval(handleRouteChange, 500);
+}
+
+if (document.body) {
+  init();
+} else {
+  document.addEventListener('DOMContentLoaded', init);
+}
 })();
