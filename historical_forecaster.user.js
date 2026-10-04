@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Historical Forecast - AI Starter
 // @namespace    http://tampermonkey.net/
-// @version      0.5.1
+// @version      0.6.1
 // @description  Validate System Forecasts (Alpha + Lambda) + Diagnostics Tab (Heatmap + Quadrant)
 // @author       Gil Martins
 // @match        https://prod-rm.tp.proscloud.com/market/forecast/*
@@ -1074,6 +1074,11 @@
       border: 1px solid transparent;
       white-space: nowrap;
       width: 100%;
+      height: 40px;
+      border-radius: 4px;
+      background: #eee !important;
+      color: #111 !important;
+      font-weight: bold;
     }
 
     .rm-ai-btn:hover {
@@ -1125,8 +1130,8 @@
       display: none;
       width: 12px;
       height: 12px;
-      border: 2px solid rgba(255,255,255,0.4);
-      border-top-color: #fff;
+      border: 2px solid rgba(0,0,0,0.4);
+      border-top-color: #000;
       border-radius: 50%;
       animation: rm-spin 0.6s linear infinite;
     }
@@ -1208,8 +1213,8 @@
         SELECT  a.[Departure Date],
                 a.[Final Alpha Influenced],
                 a.[Final Lambda Influenced],
-                a.[Final Alpha Seasonal],
-                a.[Final Lambda Seasonal],
+                CASE WHEN a.[Final Alpha Seasonal] = 0 THEN a.[Alpha] ELSE a.[Final Alpha Seasonal] END AS [Final Alpha Seasonal],
+                CASE WHEN a.[Final Lambda Seasonal] = 0 THEN a.[Lambda] ELSE a.[Final Lambda Seasonal] END AS [Final Lambda Seasonal],
                 a.[Departure Time],
                 a.dcp as DCP,
                 b.[DyPr Start],
@@ -1446,33 +1451,236 @@
   }
 
   // ─── MutationObserver ────────────────────────────────────────────────────────
+// ─── SPA route lifecycle ─────────────────────────────────────────────────────
 
-  function init() {
-    injectStyles();
-    document.querySelectorAll('.rm-container-historical-forecast-body .rm-measure-view-component').forEach(injectButtons);
+let historicalObserver = null;
+let routeCheckTimer = null;
+let pendingScanTimer = null;
+let lastUrl = '';
 
-    const observer = new MutationObserver((mutations) => {
-      for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
-          if (!(node instanceof HTMLElement)) continue;
-          if (node.matches('.rm-container-historical-forecast-body .rm-measure-view-component')) {
-            injectButtons(node);
-          }
-          node.querySelectorAll('.rm-measure-view-component').forEach(injectButtons);
+function isHistoricalForecastRoute() {
+  return /\/historical-forecast\/?$/.test(location.pathname);
+}
+
+function removeStyles() {
+  document.getElementById('rm-ai-btn-styles')?.remove();
+  document.getElementById('rm-stl-modal-styles')?.remove();
+}
+
+function removeInjectedUi() {
+  // Remove injected button containers.
+  document.querySelectorAll('.rm-ai-btn-container').forEach((element) => {
+    element.remove();
+  });
+
+  // Close open analysis modals.
+  document.querySelectorAll('.stl-modal-overlay').forEach((element) => {
+    element.remove();
+  });
+
+  // Remove the injected marker so that the button can be added again
+  // when the user returns to historical-forecast.
+  document.querySelectorAll(`[${INJECTED_ATTR}]`).forEach((element) => {
+    element.removeAttribute(INJECTED_ATTR);
+  });
+
+  if (pendingScanTimer !== null) {
+    clearTimeout(pendingScanTimer);
+    pendingScanTimer = null;
+  }
+}
+
+function scanAndInject() {
+  if (!isHistoricalForecastRoute()) return;
+
+  injectStyles();
+
+  document
+    .querySelectorAll(
+      '.rm-container-historical-forecast-body .rm-container-legend-section .rm-measure-view-component'
+    )
+    .forEach(injectButtons);
+}
+
+function scheduleScan() {
+  if (!isHistoricalForecastRoute()) return;
+
+  if (pendingScanTimer !== null) {
+    clearTimeout(pendingScanTimer);
+  }
+
+  // Debounce because React can add several DOM nodes in one render cycle.
+  pendingScanTimer = setTimeout(() => {
+    pendingScanTimer = null;
+    scanAndInject();
+  }, 50);
+}
+
+function startHistoricalObserver() {
+  if (historicalObserver || !document.body) return;
+
+  historicalObserver = new MutationObserver((mutations) => {
+    if (!isHistoricalForecastRoute()) return;
+
+    let relevantChange = false;
+
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (!(node instanceof HTMLElement)) continue;
+
+        if (
+          node.matches(
+            '.rm-container-historical-forecast-body .rm-container-legend-section .rm-measure-view-component'
+          ) ||
+          node.querySelector(
+            '.rm-container-historical-forecast-body .rm-container-legend-section .rm-measure-view-component'
+          )
+        ) {
+          relevantChange = true;
+          break;
         }
       }
-    });
 
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
-  }
+      if (relevantChange) break;
+    }
 
-  if (document.body) {
-    init();
+    if (relevantChange) {
+      scheduleScan();
+    }
+  });
+
+  historicalObserver.observe(document.body, {
+    childList: true,
+    subtree: true
+  });
+}
+
+function stopHistoricalObserver() {
+  if (!historicalObserver) return;
+
+  historicalObserver.disconnect();
+  historicalObserver = null;
+}
+
+function activateHistoricalForecast() {
+  injectStyles();
+  startHistoricalObserver();
+
+  // Immediate attempt.
+  scanAndInject();
+
+  // React may render the route content shortly after changing the URL.
+  setTimeout(scanAndInject, 250);
+  setTimeout(scanAndInject, 750);
+  setTimeout(scanAndInject, 1500);
+}
+
+function deactivateHistoricalForecast() {
+  stopHistoricalObserver();
+  removeInjectedUi();
+  removeStyles();
+}
+
+function handleRouteChange(force = false) {
+  const currentUrl = location.href;
+
+  if (!force && currentUrl === lastUrl) return;
+  lastUrl = currentUrl;
+
+  if (isHistoricalForecastRoute()) {
+    activateHistoricalForecast();
   } else {
-    document.addEventListener('DOMContentLoaded', init);
+    deactivateHistoricalForecast();
   }
+}
+
+function installHistoryListeners() {
+  const pageWindow = unsafeWindow;
+  const pageHistory = pageWindow.history;
+
+  if (pageWindow.__rmAiHistoryListenerInstalled) return;
+  pageWindow.__rmAiHistoryListenerInstalled = true;
+
+  const originalPushState = pageHistory.pushState;
+  const originalReplaceState = pageHistory.replaceState;
+
+  pageHistory.pushState = function (...args) {
+    const result = originalPushState.apply(this, args);
+
+    window.dispatchEvent(
+      new CustomEvent('rm-ai-locationchange', {
+        detail: {
+          type: 'pushState',
+          url: pageWindow.location.href
+        }
+      })
+    );
+
+    return result;
+  };
+
+  pageHistory.replaceState = function (...args) {
+    const result = originalReplaceState.apply(this, args);
+
+    window.dispatchEvent(
+      new CustomEvent('rm-ai-locationchange', {
+        detail: {
+          type: 'replaceState',
+          url: pageWindow.location.href
+        }
+      })
+    );
+
+    return result;
+  };
+
+  pageWindow.addEventListener('popstate', () => {
+    window.dispatchEvent(
+      new CustomEvent('rm-ai-locationchange', {
+        detail: {
+          type: 'popstate',
+          url: pageWindow.location.href
+        }
+      })
+    );
+  });
+
+  pageWindow.addEventListener('hashchange', () => {
+    window.dispatchEvent(
+      new CustomEvent('rm-ai-locationchange', {
+        detail: {
+          type: 'hashchange',
+          url: pageWindow.location.href
+        }
+      })
+    );
+  });
+
+  window.addEventListener('rm-ai-locationchange', () => {
+    // Allow React to start updating the DOM first.
+    setTimeout(() => handleRouteChange(), 0);
+  });
+}
+
+function init() {
+  installHistoryListeners();
+
+  lastUrl = '';
+  handleRouteChange(true);
+
+  /*
+   * Fallback for route changes not captured by History API interception.
+   * It only performs work when location.href changes.
+   */
+  routeCheckTimer = setInterval(() => {
+    handleRouteChange();
+  }, 500);
+}
+
+if (document.body) {
+  init();
+} else {
+  document.addEventListener('DOMContentLoaded', init, { once: true });
+}
 
 })();
