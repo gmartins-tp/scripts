@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         React Highcharts Vertical Tick Lines
 // @namespace    http://tampermonkey.net/
-// @version      1.2
+// @version      2.2
 // @author       Gil Martins
 // @description  Draw vertical lines at x-axis ticks for Highcharts inside React apps, shade years, and plot lines width increase
 // @match       https://prod-rm.tp.proscloud.com/market/forecast/*
