@@ -9,6 +9,8 @@
 // @require      https://cdnjs.cloudflare.com/ajax/libs/alasql/4.6.6/alasql.min.js
 // @require      https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js
 // @require      https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js
+// @downloadURL  https://github.com/gmartins-tp/scripts/raw/refs/heads/main/historical_forecaster.user.js
+// @updateURL    https://github.com/gmartins-tp/scripts/raw/refs/heads/main/historical_forecaster.user.js
 // @noframes
 // ==/UserScript==
 
