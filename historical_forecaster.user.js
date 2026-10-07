@@ -1,17 +1,21 @@
 // ==UserScript==
 // @name         Historical Forecast - AI Starter
 // @namespace    http://tampermonkey.net/
-// @version      0.6.1
+// @version      0.8.1
 // @description  Validate System Forecasts (Alpha + Lambda) + Diagnostics Tab (Heatmap + Quadrant)
 // @author       Gil Martins
 // @match        https://prod-rm.tp.proscloud.com/market/forecast/*
-// @grant        unsafeWindow
 // @require      https://cdnjs.cloudflare.com/ajax/libs/alasql/4.6.6/alasql.min.js
 // @require      https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js
 // @require      https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js
 // @downloadURL  https://github.com/gmartins-tp/scripts/raw/refs/heads/main/historical_forecaster.user.js
 // @updateURL    https://github.com/gmartins-tp/scripts/raw/refs/heads/main/historical_forecaster.user.js
 // @noframes
+// @grant unsafeWindow
+// @grant GM_getValue
+// @grant GM_setValue
+// @grant GM_deleteValue
+// @grant GM_listValues
 // ==/UserScript==
 
 // ─── STL / YoY Visualiser ───────────────────────────────────────────────────
@@ -23,6 +27,11 @@
     console.error('[RM AI] Chart.js not loaded. Ensure @require is in the metadata block.');
     return;
   }
+
+  // Chart.js doesn't read CSS fonts – set them explicitly so modal & pop-out match
+  Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+  Chart.defaults.font.size = 11;
+  Chart.defaults.color = '#475569';
 
   const WEEK_TO_MONTH = {
     0: 'Jan', 4: 'Feb', 8: 'Mar', 13: 'Apr', 17: 'May', 21: 'Jun',
@@ -206,9 +215,9 @@
         .stl-toggle-group button:last-child { border-radius: 0 6px 6px 0; }
         .stl-toggle-group button.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
         .stl-modal__body {
-          flex: 1; overflow-y: auto; padding: 16px 20px;
-          display: flex; flex-direction: column; gap: 20px;
-        }
+          flex: 1; min-height: 0; overflow-y: auto; padding: 12px 20px;
+          display: flex; flex-direction: column; gap: 12px;
+          }
         .stl-tab-panel { display: none; }
         .stl-tab-panel.active { display: flex; flex-direction: column; gap: 20px; }
         .stl-chart-box {
@@ -221,6 +230,26 @@
         }
         .stl-chart-box__title span { color: #94a3b8; font-weight: 400; }
         .stl-chart-wrap { position: relative; height: 340px; width: 100%; }
+
+        /* Time-series tab: the two charts share the available modal height */
+.stl-tab-panel[data-panel="time-series"].active {
+flex: 1 1 auto;
+min-height: 0;
+}
+.stl-tab-panel[data-panel="time-series"] .stl-chart-box {
+flex: 1 1 0;
+min-height: 220px; /* don't squash below this on small screens */
+display: flex;
+flex-direction: column;
+}
+.stl-tab-panel[data-panel="time-series"] .stl-chart-wrap {
+flex: 1 1 auto;
+height: auto;
+min-height: 0;
+}
+
+
+
         .stl-empty-state {
           display: flex; align-items: center; justify-content: center;
           height: 200px; color: #94a3b8; font-size: 13px;
@@ -280,6 +309,8 @@
           pointer-events: none; z-index: 100; display: none;
           white-space: pre-line; line-height: 1.5;
         }
+        .stl-modal-overlay { background: transparent; pointer-events: none; }
+.stl-modal { pointer-events: auto; }
       `;
       document.head.appendChild(css);
     }
@@ -291,7 +322,10 @@
       <div class="stl-modal">
         <div class="stl-modal__header">
           <h3 class="stl-modal__title">Seasonality YoY Analysis Viewer</h3>
-          <button class="stl-modal__close" title="Close">×</button>
+          <div style="display:flex; gap:6px;">
+            <button class="stl-modal__close stl-modal__popout" title="Open in separate window">⧉</button>
+            <button class="stl-modal__close stl-modal__x" title="Close">×</button>
+          </div>
         </div>
         <div class="stl-modal__tabs">
           <button class="stl-tab active" data-tab="time-series">Time Series & Seasonality</button>
@@ -352,17 +386,21 @@
       </div>
     `;
     document.body.appendChild(overlay);
-    overlay.querySelector('.stl-modal__close').onclick = () => overlay.remove();
+    const modalEl = overlay.querySelector('.stl-modal');
+    //modalEl.querySelector('.stl-modal__close').onclick = () => modalEl.remove();
+
+    // Window that currently hosts the modal (main page or PiP/popup)
+    const hostWin = () => modalEl.ownerDocument.defaultView || window;
 
     // ── Tab switching ──────────────────────────────────────────────────────────
-    const tabs = overlay.querySelectorAll('.stl-tab');
-    const panels = overlay.querySelectorAll('.stl-tab-panel');
+    const tabs = modalEl.querySelectorAll('.stl-tab');
+    const panels = modalEl.querySelectorAll('.stl-tab-panel');
     tabs.forEach(tab => {
       tab.addEventListener('click', () => {
         tabs.forEach(t => t.classList.remove('active'));
         panels.forEach(p => p.classList.remove('active'));
         tab.classList.add('active');
-        overlay.querySelector(`[data-panel="${tab.dataset.tab}"]`).classList.add('active');
+        modalEl.querySelector(`[data-panel="${tab.dataset.tab}"]`).classList.add('active');
         if (tab.dataset.tab === 'diagnostics') {
           renderHeatmap();
           renderQuadrant();
@@ -375,10 +413,10 @@
     let scaleMode = 'absolute';
     let analysisType = 'lambda';
 
-    const elDcp = overlay.querySelector('#stl-select-dcp');
-    const elDep = overlay.querySelector('#stl-select-dep');
-    const elType = hasBothTypes ? overlay.querySelector('#stl-select-type') : null;
-    const elToggle = overlay.querySelector('#stl-scale-toggle');
+    const elDcp = modalEl.querySelector('#stl-select-dcp');
+    const elDep = modalEl.querySelector('#stl-select-dep');
+    const elType = hasBothTypes ? modalEl.querySelector('#stl-select-type') : null;
+    const elToggle = modalEl.querySelector('#stl-scale-toggle');
 
     function getKey() {
       return `dcp${elDcp.value}_${elDep.value}`;
@@ -396,10 +434,10 @@
     // ─── Time-Series Chart ───────────────────────────────────────────────────
     function renderTs() {
       const d = getData();
-      const canvas = overlay.querySelector('#stl-chart-ts');
+      const canvas = modalEl.querySelector('#stl-chart-ts');
       const wrap = canvas.parentElement;
       const typeLabel = hasBothTypes ? `${analysisType.toUpperCase()} · ` : '';
-      overlay.querySelector('#ts-subtitle').textContent = d ? `— ${typeLabel}DCP ${elDcp.value} · ${elDep.value}` : '';
+      modalEl.querySelector('#ts-subtitle').textContent = d ? `— ${typeLabel}DCP ${elDcp.value} · ${elDep.value}` : '';
 
       if (chartTs) { chartTs.destroy(); chartTs = null; }
       if (!d || d.error) {
@@ -527,6 +565,7 @@
         options: {
           responsive: true,
           maintainAspectRatio: false,
+          devicePixelRatio: hostWin().devicePixelRatio || 1, // ← add this line
           interaction: { mode: 'index', intersect: false },
           plugins: {
             legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 8 } },
@@ -567,10 +606,10 @@
     // ─── Weekly Seasonality Chart ────────────────────────────────────────────
     function renderSeas() {
       const d = getData();
-      const canvas = overlay.querySelector('#stl-chart-seas');
+      const canvas = modalEl.querySelector('#stl-chart-seas');
       const wrap = canvas.parentElement;
       const typeLabel = hasBothTypes ? `${analysisType.toUpperCase()} · ` : '';
-      overlay.querySelector('#seas-subtitle').textContent = d
+      modalEl.querySelector('#seas-subtitle').textContent = d
         ? `— ${typeLabel}DCP ${elDcp.value} · ${elDep.value} · ${scaleMode}`
         : '';
 
@@ -665,6 +704,7 @@
           responsive: true,
           maintainAspectRatio: false,
           interaction: { mode: 'index', intersect: false },
+          devicePixelRatio: hostWin().devicePixelRatio || 1, // ← add this line
           plugins: {
             legend: {
               position: 'top',
@@ -706,10 +746,10 @@
 
     // ─── Heatmap: System Forecast % Error vs Trend Forecast ──────────────────
     function renderHeatmap() {
-      const wrap = overlay.querySelector('#heatmap-wrap');
+      const wrap = modalEl.querySelector('#heatmap-wrap');
       const dep = elDep.value;
       const typeLabel = hasBothTypes ? `${analysisType.toUpperCase()} · ` : '';
-      overlay.querySelector('#heat-subtitle').textContent = `— ${typeLabel}${dep}`;
+      modalEl.querySelector('#heat-subtitle').textContent = `— ${typeLabel}${dep}`;
 
       // Collect all unique departure dates across all DCPs
       const allDates = new Set();
@@ -844,10 +884,10 @@
 
     // ─── Quadrant: Alpha vs Lambda scatter by DCP ──────────────────────────
     function renderQuadrant() {
-      const wrap = overlay.querySelector('#quadrant-wrap');
-      const tooltip = overlay.querySelector('#quad-tooltip');
+      const wrap = modalEl.querySelector('#quadrant-wrap');
+      const tooltip = modalEl.querySelector('#quad-tooltip');
       const dep = elDep.value;
-      overlay.querySelector('#quad-subtitle').textContent = `— ${dep}`;
+      modalEl.querySelector('#quad-subtitle').textContent = `— ${dep}`;
 
       if (!hasBothTypes) {
         wrap.innerHTML = `<div class="stl-empty-state">Quadrant view requires both Alpha and Lambda analysis. Enable dual-mode in the backend.</div>`;
@@ -1014,15 +1054,15 @@
 
     // ─── Update all charts ───────────────────────────────────────────────────
     function updateAll() {
-      const tsWrap = overlay.querySelector('#stl-chart-ts')?.parentElement;
-      const seasWrap = overlay.querySelector('#stl-chart-seas')?.parentElement;
-      if (tsWrap && !overlay.querySelector('#stl-chart-ts')) tsWrap.innerHTML = '<canvas id="stl-chart-ts"></canvas>';
-      if (seasWrap && !overlay.querySelector('#stl-chart-seas')) seasWrap.innerHTML = '<canvas id="stl-chart-seas"></canvas>';
+      const tsWrap = modalEl.querySelector('#stl-chart-ts')?.parentElement;
+      const seasWrap = modalEl.querySelector('#stl-chart-seas')?.parentElement;
+      if (tsWrap && !modalEl.querySelector('#stl-chart-ts')) tsWrap.innerHTML = '<canvas id="stl-chart-ts"></canvas>';
+      if (seasWrap && !modalEl.querySelector('#stl-chart-seas')) seasWrap.innerHTML = '<canvas id="stl-chart-seas"></canvas>';
 
       renderTs();
       renderSeas();
 
-      const diagPanel = overlay.querySelector('[data-panel="diagnostics"]');
+      const diagPanel = modalEl.querySelector('[data-panel="diagnostics"]');
       if (diagPanel.classList.contains('active')) {
         renderHeatmap();
         renderQuadrant();
@@ -1043,11 +1083,144 @@
       elToggle.querySelectorAll('button').forEach(b => b.classList.remove('active'));
       e.target.classList.add('active');
       scaleMode = e.target.dataset.mode;
-      const wrapSeas = overlay.querySelector('#stl-chart-seas').parentElement;
+      const wrapSeas = modalEl.querySelector('#stl-chart-seas').parentElement;
       wrapSeas.innerHTML = '<canvas id="stl-chart-seas"></canvas>';
       renderSeas();
     });
 
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // DRAG (in page) + POP-OUT (separate window) + AUTO-REFRESH
+    // ═══════════════════════════════════════════════════════════════════════
+    let popWin = null;
+    let closing = false;
+
+    // ── Drag inside the page (header = handle) ─────────────────────────────
+    const header = modalEl.querySelector('.stl-modal__header');
+    header.style.cursor = 'move';
+    header.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('button') || popWin) return;
+      const r = modalEl.getBoundingClientRect();
+      const dx = e.clientX - r.left, dy = e.clientY - r.top;
+      Object.assign(modalEl.style, { position: 'fixed', margin: '0', left: r.left + 'px', top: r.top + 'px' });
+      header.setPointerCapture(e.pointerId);
+      const move = (ev) => {
+        modalEl.style.left = Math.min(Math.max(ev.clientX - dx, 100 - r.width), innerWidth - 100) + 'px';
+        modalEl.style.top  = Math.min(Math.max(ev.clientY - dy, 0), innerHeight - 40) + 'px';
+      };
+      const up = () => {
+        header.removeEventListener('pointermove', move);
+        header.removeEventListener('pointerup', up);
+      };
+      header.addEventListener('pointermove', move);
+      header.addEventListener('pointerup', up);
+    });
+
+    // ── Full rebuild, once the host window has laid out ────────────────────
+    function rerenderIn(win) {
+      win.requestAnimationFrame(() => win.requestAnimationFrame(updateAll));
+    }
+
+    // ── Auto-refresh on resize (modal AND pop-out) ─────────────────────────
+    let sizeObserver = null;
+    let sizeTimer = null;
+    let lastQuadW = 0;
+
+    function refreshCharts() {
+      if (!modalEl.isConnected) { sizeObserver?.disconnect(); return; }
+      const dpr = hostWin().devicePixelRatio || 1;
+      [chartTs, chartSeas].forEach(c => {
+        if (!c) return;
+        c.options.devicePixelRatio = dpr;
+        c.resize();
+        c.update('none');
+      });
+      // Quadrant SVG is laid out from its width → redraw when width changes
+      const diagActive = modalEl.querySelector('[data-panel="diagnostics"]').classList.contains('active');
+      const w = modalEl.querySelector('#quadrant-wrap')?.clientWidth || 0;
+      if (diagActive && Math.abs(w - lastQuadW) > 20) {
+        lastQuadW = w;
+        renderQuadrant();
+      }
+    }
+
+    // Use the ResizeObserver of whichever window hosts the modal
+    function watchSize() {
+      sizeObserver?.disconnect();
+      const RO = hostWin().ResizeObserver || ResizeObserver;
+      sizeObserver = new RO(() => {
+        clearTimeout(sizeTimer);
+        sizeTimer = setTimeout(refreshCharts, 100);
+      });
+      sizeObserver.observe(modalEl.querySelector('.stl-modal__body'));
+    }
+
+    // Hidden-tab charts have no size → refresh when their tab is shown
+    tabs.forEach(tab => tab.addEventListener('click', () => {
+      hostWin().requestAnimationFrame(refreshCharts);
+    }));
+
+    // ── Pop out to an independent window ───────────────────────────────────
+    async function popOut() {
+      if (popWin) { popWin.focus(); return; }
+      const pip = window.documentPictureInPicture || unsafeWindow.documentPictureInPicture;
+      try {
+        if (pip) popWin = await pip.requestWindow({ width: 1400, height: 900 });
+      } catch (e) {
+        console.warn('[RM AI] PiP failed, falling back to popup', e);
+      }
+      if (!popWin) popWin = window.open('', 'rm-stl-viewer', 'popup,width=1000,height=750');
+      if (!popWin) { alert('Popup blocked – allow popups for this site.'); return; }
+
+      const doc = popWin.document;
+      doc.title = 'Seasonality YoY Analysis';
+      const css = document.getElementById('rm-stl-modal-styles');
+      if (css) doc.head.appendChild(css.cloneNode(true));
+      doc.body.style.cssText = 'margin:0; overflow:hidden; font-family:-apple-system,"Segoe UI",Roboto,helvetica,sans-serif;';
+
+      // Copy the PROS tab's browser zoom (DPR includes zoom; PiP window has none)
+      const zoom = window.devicePixelRatio / (popWin.devicePixelRatio || 1);
+      //if (Math.abs(zoom - 1) > 0.02) doc.documentElement.style.zoom = zoom;
+      doc.documentElement.style.fontSize = getComputedStyle(document.documentElement).fontSize;
+
+      // Destroy charts before the move so they're rebuilt for the new window
+      if (chartTs)   { chartTs.destroy();   chartTs = null; }
+      if (chartSeas) { chartSeas.destroy(); chartSeas = null; }
+
+      modalEl.style.cssText = 'width:100vw; height:100vh; max-width:none; border-radius:0; box-shadow:none;';
+      doc.body.appendChild(modalEl);          // move, not copy – listeners survive
+      overlay.style.display = 'none';
+      modalEl.querySelector('.stl-modal__popout').style.display = 'none';
+      header.style.cursor = 'default';
+
+      watchSize();                            // observe in the pop-out window
+      rerenderIn(popWin);
+
+      popWin.addEventListener('pagehide', () => {
+        popWin = null;
+        if (closing) return;
+        if (chartTs)   { chartTs.destroy();   chartTs = null; }
+        if (chartSeas) { chartSeas.destroy(); chartSeas = null; }
+        modalEl.style.cssText = '';           // dock back into the page
+        overlay.appendChild(modalEl);
+        overlay.style.display = '';
+        modalEl.querySelector('.stl-modal__popout').style.display = '';
+        header.style.cursor = 'move';
+        watchSize();                          // observe in the main page again
+        rerenderIn(window);
+      });
+    }
+
+    modalEl.querySelector('.stl-modal__popout').onclick = popOut;
+    modalEl.querySelector('.stl-modal__x').onclick = () => {
+      closing = true;
+      sizeObserver?.disconnect();
+      if (popWin) popWin.close();
+      overlay.remove();
+    };
+
+
+    watchSize();
     updateAll();
   };
 
@@ -1167,13 +1340,31 @@
   async function onSeasonalityClick(btn, target) {
     setLoading(btn, true);
 
+    console.log("VNEW X")
+
     try {
       let activeOD = unsafeWindow.proshack.getActiveTabOD();
       const [origin, destination] = (activeOD || '-').split('-');
 
       // ── CACHE with TTL ─────────────────────────────────────────────
       const filters = unsafeWindow.proshack.read_menu_filters();
-      const cacheKey = `${activeOD}_${JSON.stringify(filters)}`;
+      
+
+      var subkey = ''
+      if ("POS" in filters) {
+        subkey += filters["POS"]+"_"
+      }
+      if ("PATH" in filters) {
+        subkey += filters["PATH"]+"_"
+      }
+      if ("DOW" in filters) {
+        subkey += filters["DOW"]+"_"
+      }
+
+      const cacheKey = `${activeOD}_`+subkey; //${JSON.stringify(filters)}
+
+      console.log('[RM AI] key:', cacheKey);
+
       const cached = getCached(cacheKey);
       if (cached) {
         console.log('[RM AI] Serving from cache:', cacheKey);
@@ -1270,18 +1461,18 @@
         }
       }
 
-      if ("DEPARTURE_TIME" in filters) {
+      /*if ("DEPARTURE_TIME" in filters) {
         const markets = filters["DEPARTURE_TIME"].split(",").map(s => s.trim()).filter(Boolean);
         if (markets.length > 0) {
           const pathClause = markets.map(m => `[Departure Time] = '${m.replace(/'/g, "''")}'`).join(" OR ");
           sql += ` AND ( ${pathClause} )`;
         }
-      }
+      }*/
 
-      console.log(csvString);
+      //console.log(csvString);
 
       const rawRows = await alasql.promise(sql, [csvString, DCP_DATA_SQL]);
-      console.log(rawRows);
+      //console.log(rawRows);
 
       console.log(`[RM AI] ${rawRows.length} rows loaded into alasql table`);
 
@@ -1338,9 +1529,11 @@
       console.log("[RM AI] STL/YoY result:", analysis);
       unsafeWindow.proshack.lastStlYoy = analysis;
 
+      await setCached(cacheKey, analysis);
+
       showStlModal(analysis);
 
-      setCached(cacheKey, analysis);
+      
 
     } catch (err) {
       console.error('[RM AI] Seasonality Validation failed', err);
@@ -1349,30 +1542,49 @@
     }
   }
 
-  // ── Cache helper with TTL ───────────────────────────────────────────────────
-  function getEndOfDay() {
-    const d = new Date();
-    d.setHours(23, 59, 59, 999);
-    return d.getTime();
-  }
+// ── Persistent cache (Tampermonkey storage), expires at end of day ─────────
+const CACHE_PREFIX = 'stl_v1:';   // bump to v2 to wipe old entries after a backend change
 
-  // Replace the constant with a function call
-  const CACHE_TTL_MS = getEndOfDay() - Date.now();
+function getEndOfDay() {
+  const d = new Date();
+  d.setHours(23, 59, 59, 999);
+  return d.getTime();
+}
 
-  function getCached(key) {
-    const entry = window._stlCache?.[key];
-    if (!entry) return null;
-    if (Date.now() - entry._cachedAt > CACHE_TTL_MS) {
-      delete window._stlCache[key];
-      return null;
+function pruneExpired() {
+  const now = Date.now();
+  for (const k of GM_listValues()) {
+    if (!k.startsWith('stl_')) continue;              // only touch our own entries
+    const entry = GM_getValue(k);
+    if (!k.startsWith(CACHE_PREFIX) || !entry || now > entry.expiresAt) {
+      GM_deleteValue(k);
     }
-    return entry.data;
   }
+}
 
-  function setCached(key, data) {
-    if (!window._stlCache) window._stlCache = {};
-    window._stlCache[key] = { data, _cachedAt: Date.now() };
+function getCached(key) {
+  const entry = GM_getValue(CACHE_PREFIX + key);
+  if (!entry) return null;
+  if (Date.now() > entry.expiresAt) {
+    GM_deleteValue(CACHE_PREFIX + key);
+    return null;
   }
+  return entry.data;
+}
+
+function setCached(key, data) {
+  // Round-trip through JSON so page-context objects are stored as plain data
+  const plain = JSON.parse(JSON.stringify(data));
+  GM_setValue(CACHE_PREFIX + key, { data: plain, expiresAt: getEndOfDay() });
+}
+
+pruneExpired();   // run once when the script loads
+
+unsafeWindow.proshack.clearStlCache = () => {
+  GM_listValues().filter(k => k.startsWith('stl_')).forEach(GM_deleteValue);
+  console.log('[RM AI] STL cache cleared');
+};
+
 
   function onCounterForecastsClick(btn, target) {
     console.log('[RM AI] Counter Forecasts clicked', target);
