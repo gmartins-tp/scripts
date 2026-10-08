@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         HF Gradio Generic Client
 // @namespace    http://tampermonkey.net/
-// @version      3.0
+// @version      4.0
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
 // @downloadURL  https://github.com/gmartins-tp/scripts/raw/refs/heads/main/HF_GRADIO_UTIL.user.js
@@ -91,19 +91,36 @@
             const {
                 maxWaitMs = 120000,
                 pollInterval = 3000,
+                maxMisses = 3,              // consecutive not_found / failed polls before giving up
                 onStatus = () => {}
             } = opts;
 
             const jobId = await this.submitJob(submitApi, params);
             const start = Date.now();
+            let misses = 0;
 
             while (Date.now() - start < maxWaitMs) {
-                const status = await this.checkJob(checkApi, jobId);
+                let status;
+                try {
+                    status = await this.checkJob(checkApi, jobId);
+                } catch (e) {
+                    // network blip / Space busy (503, non-JSON, missing event_id)
+                    status = { status: "poll_error", error: e.message };
+                }
                 onStatus(status);
 
-                if (status.status === "done")  return status.result;
-                if (status.status === "error") throw new Error(status.error || "Job failed");
-                if (status.status === "not_found") throw new Error("Job lost (Space restarted?)");
+                if (status?.status === "done")  return status.result;
+                if (status?.status === "error") throw new Error(status.error || "Job failed");
+
+                if (status?.status === "not_found" || status?.status === "poll_error") {
+                    if (++misses >= maxMisses) {
+                        throw new Error(status.status === "not_found"
+                            ? "Job lost (Space restarted?)"
+                            : `Polling failed ${misses}x: ${status.error}`);
+                    }
+                } else {
+                    misses = 0;             // queued / running → healthy, keep polling
+                }
 
                 await new Promise(r => setTimeout(r, pollInterval));
             }
@@ -126,3 +143,4 @@
 
     console.log("[HFGradio] Generic client ready");
 })();
+
