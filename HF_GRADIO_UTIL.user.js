@@ -1,5 +1,6 @@
 // ==UserScript==
 // @name         HF Gradio Generic Client
+// @namespace    http://tampermonkey.net/
 // @version      3.0
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
