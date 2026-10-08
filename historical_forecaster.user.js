@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Historical Forecast - AI Starter
 // @namespace    http://tampermonkey.net/
-// @version      0.9.1
+// @version      0.9.2
 // @description  Validate System Forecasts (Alpha + Lambda) + Diagnostics Tab (Heatmap + Quadrant)
 // @author       Gil Martins
 // @match        https://prod-rm.tp.proscloud.com/market/forecast/*
@@ -418,6 +418,31 @@
     const elType = hasBothTypes ? modalEl.querySelector('#stl-select-type') : null;
     const elToggle = modalEl.querySelector('#stl-scale-toggle');
 
+    // Canvases are looked up once and never removed. They move with modalEl into the pop-out.
+    const tsCanvas   = modalEl.querySelector('#stl-chart-ts');
+    const seasCanvas = modalEl.querySelector('#stl-chart-seas');
+
+    function showChartMessage(canvas, text) {
+      const wrap = canvas.parentElement;
+      let msg = wrap.querySelector(':scope > .stl-empty-state');
+      if (!msg) {
+        msg = canvas.ownerDocument.createElement('div');   // correct document in the pop-out too
+        msg.className = 'stl-empty-state';
+        msg.style.height = '100%';
+        wrap.appendChild(msg);
+      }
+      msg.textContent = text;         // textContent, not innerHTML, for backend text
+      msg.style.display = 'flex';     // not `hidden`: .stl-empty-state's display:flex would override it
+      canvas.style.display = 'none';
+    }
+
+    function hideChartMessage(canvas) {
+      const msg = canvas.parentElement.querySelector(':scope > .stl-empty-state');
+      if (msg) msg.style.display = 'none';
+      canvas.style.display = '';
+    }
+    //------------
+
     function getKey() {
       return `dcp${elDcp.value}_${elDep.value}`;
     }
@@ -434,16 +459,16 @@
     // ─── Time-Series Chart ───────────────────────────────────────────────────
     function renderTs() {
       const d = getData();
-      const canvas = modalEl.querySelector('#stl-chart-ts');
-      const wrap = canvas.parentElement;
+      const canvas = tsCanvas;
       const typeLabel = hasBothTypes ? `${analysisType.toUpperCase()} · ` : '';
       modalEl.querySelector('#ts-subtitle').textContent = d ? `— ${typeLabel}DCP ${elDcp.value} · ${elDep.value}` : '';
 
       if (chartTs) { chartTs.destroy(); chartTs = null; }
       if (!d || d.error) {
-        wrap.innerHTML = `<div class="stl-empty-state">${d?.error || 'No data available'}</div>`;
+        showChartMessage(canvas, d?.error || 'No data available');
         return;
       }
+      hideChartMessage(canvas);   // before new Chart(), so Chart.js measures a visible canvas
 
       const histDates = d.historical?.dates?.map(s => new Date(s).getTime()) || [];
       const histActual = d.historical?.actual || [];
@@ -606,24 +631,22 @@
     // ─── Weekly Seasonality Chart ────────────────────────────────────────────
     function renderSeas() {
       const d = getData();
-      const canvas = modalEl.querySelector('#stl-chart-seas');
-      const wrap = canvas.parentElement;
+      const canvas = seasCanvas;
       const typeLabel = hasBothTypes ? `${analysisType.toUpperCase()} · ` : '';
       modalEl.querySelector('#seas-subtitle').textContent = d
-        ? `— ${typeLabel}DCP ${elDcp.value} · ${elDep.value} · ${scaleMode}`
-        : '';
+        ? `— ${typeLabel}DCP ${elDcp.value} · ${elDep.value} · ${scaleMode}` : '';
 
       if (chartSeas) { chartSeas.destroy(); chartSeas = null; }
       if (!d || d.error) {
-        wrap.innerHTML = `<div class="stl-empty-state">${d?.error || 'No data available'}</div>`;
+        showChartMessage(canvas, d?.error || 'No data available');
         return;
       }
-
       const root = scaleMode === 'relative' ? d.relative_weekly_seasonality : d.weekly_seasonality;
       if (!root) {
-        wrap.innerHTML = `<div class="stl-empty-state">No ${scaleMode} seasonality data</div>`;
+        showChartMessage(canvas, `No ${scaleMode} seasonality data`);
         return;
       }
+      hideChartMessage(canvas);
 
       const weeks = Array.from({length: 53}, (_, i) => i + 1);
       const toMap = (obj) => {
@@ -885,7 +908,9 @@
     // ─── Quadrant: Alpha vs Lambda scatter by DCP ──────────────────────────
     function renderQuadrant() {
       const wrap = modalEl.querySelector('#quadrant-wrap');
-      const tooltip = modalEl.querySelector('#quad-tooltip');
+      //const tooltip = modalEl.querySelector('#quad-tooltip');
+      const tooltip = modalEl.ownerDocument.createElement('div');
+      tooltip.className = 'quadrant-tooltip';
       const dep = elDep.value;
       modalEl.querySelector('#quad-subtitle').textContent = `— ${dep}`;
 
@@ -1053,7 +1078,7 @@
     }
 
     // ─── Update all charts ───────────────────────────────────────────────────
-    function updateAll() {
+    /*function updateAll() {
       const tsWrap = modalEl.querySelector('#stl-chart-ts')?.parentElement;
       const seasWrap = modalEl.querySelector('#stl-chart-seas')?.parentElement;
       if (tsWrap && !modalEl.querySelector('#stl-chart-ts')) tsWrap.innerHTML = '<canvas id="stl-chart-ts"></canvas>';
@@ -1064,6 +1089,14 @@
 
       const diagPanel = modalEl.querySelector('[data-panel="diagnostics"]');
       if (diagPanel.classList.contains('active')) {
+        renderHeatmap();
+        renderQuadrant();
+      }
+    }*/
+    function updateAll() {
+      renderTs();
+      renderSeas();
+      if (modalEl.querySelector('[data-panel="diagnostics"]').classList.contains('active')) {
         renderHeatmap();
         renderQuadrant();
       }
@@ -1083,8 +1116,8 @@
       elToggle.querySelectorAll('button').forEach(b => b.classList.remove('active'));
       e.target.classList.add('active');
       scaleMode = e.target.dataset.mode;
-      const wrapSeas = modalEl.querySelector('#stl-chart-seas').parentElement;
-      wrapSeas.innerHTML = '<canvas id="stl-chart-seas"></canvas>';
+      //const wrapSeas = modalEl.querySelector('#stl-chart-seas').parentElement;
+      //wrapSeas.innerHTML = '<canvas id="stl-chart-seas"></canvas>';
       renderSeas();
     });
 
@@ -1413,6 +1446,7 @@
         WHERE [Passenger Type] = 'I' AND [Compartment] = 'Y'
       `;
 
+     
       if ("POS" in filters) {
         const markets = filters["POS"].split(",").map(s => s.trim()).filter(Boolean);
         if (markets.length > 0) {
@@ -1469,6 +1503,8 @@
       const rawRows = await alasql.promise(sql, [csvString, DCP_DATA_SQL]);
       //console.log(rawRows);
 
+     
+
       console.log(`[RM AI] ${rawRows.length} rows loaded into alasql table`);
 
       const stlClient = new unsafeWindow.HFGradioAPI(
@@ -1495,7 +1531,7 @@
         "check_stl_yoy",
         { ...commonPayload, value_col: "Final Alpha Seasonal", influenced_col: "Final Alpha Influenced" },
         {
-          maxWaitMs: 320000,
+          maxWaitMs: 720000,
           pollInterval: 5000,
           onStatus: (s) => {
             console.log("[STL/YoY Alpha] poll:", s.status);
@@ -1509,7 +1545,7 @@
         "check_stl_yoy",
         { ...commonPayload, value_col: "Final Lambda Seasonal", influenced_col: "Final Lambda Influenced" },
         {
-          maxWaitMs: 320000,
+          maxWaitMs: 720000,
           pollInterval: 5000,
           onStatus: (s) => {
             console.log("[STL/YoY Lambda] poll:", s.status);
@@ -1964,3 +2000,4 @@ if (document.body) {
 }
 
 })();
+
