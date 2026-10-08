@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Historical Forecast - AI Starter
 // @namespace    http://tampermonkey.net/
-// @version      0.8.1
+// @version      0.9.1
 // @description  Validate System Forecasts (Alpha + Lambda) + Diagnostics Tab (Heatmap + Quadrant)
 // @author       Gil Martins
 // @match        https://prod-rm.tp.proscloud.com/market/forecast/*
@@ -232,21 +232,21 @@
         .stl-chart-wrap { position: relative; height: 340px; width: 100%; }
 
         /* Time-series tab: the two charts share the available modal height */
-.stl-tab-panel[data-panel="time-series"].active {
-flex: 1 1 auto;
-min-height: 0;
-}
-.stl-tab-panel[data-panel="time-series"] .stl-chart-box {
-flex: 1 1 0;
-min-height: 220px; /* don't squash below this on small screens */
-display: flex;
-flex-direction: column;
-}
-.stl-tab-panel[data-panel="time-series"] .stl-chart-wrap {
-flex: 1 1 auto;
-height: auto;
-min-height: 0;
-}
+        .stl-tab-panel[data-panel="time-series"].active {
+        flex: 1 1 auto;
+        min-height: 0;
+        }
+        .stl-tab-panel[data-panel="time-series"] .stl-chart-box {
+        flex: 1 1 0;
+        min-height: 220px; /* don't squash below this on small screens */
+        display: flex;
+        flex-direction: column;
+        }
+        .stl-tab-panel[data-panel="time-series"] .stl-chart-wrap {
+        flex: 1 1 auto;
+        height: auto;
+        min-height: 0;
+        }
 
 
 
@@ -1321,6 +1321,18 @@ min-height: 0;
       display: none;
     }
 
+    .rm-ai-btn__badge {
+      margin-left: auto;
+      align-items: center;
+      padding: 2px 8px;
+      border-radius: 1px;
+      font-size: 12px;
+      font-weight: 600;
+      background: #dcfce7;
+      color: #166534;
+      border: 1px solid #86efac;
+      }
+
     @keyframes rm-spin {
       to { transform: rotate(360deg); }
     }
@@ -1340,32 +1352,15 @@ min-height: 0;
   async function onSeasonalityClick(btn, target) {
     setLoading(btn, true);
 
-    console.log("VNEW X")
-
     try {
-      let activeOD = unsafeWindow.proshack.getActiveTabOD();
-      const [origin, destination] = (activeOD || '-').split('-');
-
-      // ── CACHE with TTL ─────────────────────────────────────────────
-      const filters = unsafeWindow.proshack.read_menu_filters();
       
-
-      var subkey = ''
-      if ("POS" in filters) {
-        subkey += filters["POS"]+"_"
-      }
-      if ("PATH" in filters) {
-        subkey += filters["PATH"]+"_"
-      }
-      if ("DOW" in filters) {
-        subkey += filters["DOW"]+"_"
-      }
-
-      const cacheKey = `${activeOD}_`+subkey; //${JSON.stringify(filters)}
-
+      const { activeOD, filters, cacheKey } = buildCacheKey();
+      const [origin, destination] = (activeOD || '-').split('-');
       console.log('[RM AI] key:', cacheKey);
 
       const cached = getCached(cacheKey);
+
+
       if (cached) {
         console.log('[RM AI] Serving from cache:', cacheKey);
         showStlModal(cached);
@@ -1481,9 +1476,9 @@ min-height: 0;
       );
 
       const updateBtnStatus = (status) => {
-        const labelSpan = btn.querySelector('span:last-child');
+        const labelSpan = btn.querySelector('.rm-ai-btn__label');
         if (labelSpan) labelSpan.textContent = `Processing… (${status})`;
-      };
+        };
 
       const commonPayload = {
         rows: rawRows,
@@ -1539,51 +1534,102 @@ min-height: 0;
       console.error('[RM AI] Seasonality Validation failed', err);
     } finally {
       setLoading(btn, false);
+      updateCacheBadge(btn); // restores the label + shows the badge
     }
   }
 
-// ── Persistent cache (Tampermonkey storage), expires at end of day ─────────
-const CACHE_PREFIX = 'stl_v1:';   // bump to v2 to wipe old entries after a backend change
+  // ── Persistent cache (Tampermonkey storage), valid for the current day only ──
+  const CACHE_PREFIX = 'stl_v1:';      // bump to v2 to wipe old entries after a backend change
+  const INDEX_KEY    = 'stl_index';    // small { key: { day, expiresAt } } map → cheap badge checks
 
-function getEndOfDay() {
-  const d = new Date();
-  d.setHours(23, 59, 59, 999);
-  return d.getTime();
-}
+  const todayStr = () => new Date().toLocaleDateString('en-CA');   // YYYY-MM-DD, local time
 
-function pruneExpired() {
-  const now = Date.now();
-  for (const k of GM_listValues()) {
-    if (!k.startsWith('stl_')) continue;              // only touch our own entries
-    const entry = GM_getValue(k);
-    if (!k.startsWith(CACHE_PREFIX) || !entry || now > entry.expiresAt) {
-      GM_deleteValue(k);
+  function getEndOfDay() {
+    const d = new Date();
+    d.setHours(23, 59, 59, 999);
+    return d.getTime();
+  }
+
+  const readIndex  = () => GM_getValue(INDEX_KEY, {}) || {};
+  const writeIndex = (idx) => GM_setValue(INDEX_KEY, idx);
+
+  // Deletes anything not from today. Called before every read/check.
+  function pruneExpired() {
+    const now = Date.now(), today = todayStr();
+    const idx = readIndex();
+    let changed = false;
+
+    for (const [k, meta] of Object.entries(idx)) {
+      if (!meta || meta.day !== today || now > meta.expiresAt) {
+        GM_deleteValue(CACHE_PREFIX + k);
+        delete idx[k];
+        changed = true;
+      }
     }
+    // Orphans: entries without an index record, or from an older CACHE_PREFIX
+    for (const name of GM_listValues()) {
+      if (!name.startsWith('stl_') || name === INDEX_KEY) continue;
+      const k = name.startsWith(CACHE_PREFIX) ? name.slice(CACHE_PREFIX.length) : null;
+      if (k === null || !idx[k]) GM_deleteValue(name);
+    }
+    if (changed) writeIndex(idx);
   }
-}
 
-function getCached(key) {
-  const entry = GM_getValue(CACHE_PREFIX + key);
-  if (!entry) return null;
-  if (Date.now() > entry.expiresAt) {
-    GM_deleteValue(CACHE_PREFIX + key);
-    return null;
+  function isCached(key) {
+    pruneExpired();
+    return !!readIndex()[key];
   }
-  return entry.data;
-}
 
-function setCached(key, data) {
-  // Round-trip through JSON so page-context objects are stored as plain data
-  const plain = JSON.parse(JSON.stringify(data));
-  GM_setValue(CACHE_PREFIX + key, { data: plain, expiresAt: getEndOfDay() });
-}
+  function getCached(key) {
+    if (!isCached(key)) return null;
+    const entry = GM_getValue(CACHE_PREFIX + key);
+    return entry ? entry.data : null;
+  }
 
-pruneExpired();   // run once when the script loads
+  function setCached(key, data) {
+    pruneExpired();
+    const plain = JSON.parse(JSON.stringify(data));   // strip page-context proxies
+    const expiresAt = getEndOfDay();
+    GM_setValue(CACHE_PREFIX + key, { data: plain, expiresAt });
+    const idx = readIndex();
+    idx[key] = { day: todayStr(), expiresAt };
+    writeIndex(idx);
+  }
 
-unsafeWindow.proshack.clearStlCache = () => {
-  GM_listValues().filter(k => k.startsWith('stl_')).forEach(GM_deleteValue);
-  console.log('[RM AI] STL cache cleared');
-};
+  pruneExpired();   // also run once at load
+
+  if (unsafeWindow.proshack) {
+    unsafeWindow.proshack.clearStlCache = () => {
+      GM_listValues().filter(k => k.startsWith('stl_')).forEach(GM_deleteValue);
+      document.querySelectorAll('.rm-ai-btn--seasonality').forEach(updateCacheBadge);
+      console.log('[RM AI] STL cache cleared');
+    };
+  }
+
+  // ── Cache key (shared by click handler and badge) ──────────────────────────
+  function buildCacheKey() {
+    const activeOD = unsafeWindow.proshack.getActiveTabOD();
+    const filters  = unsafeWindow.proshack.read_menu_filters();
+    let subkey = '';
+    if ('POS'  in filters) subkey += filters['POS']  + '_';
+    if ('PATH' in filters) subkey += filters['PATH'] + '_';
+    if ('DOW'  in filters) subkey += filters['DOW']  + '_';
+    return { activeOD, filters, cacheKey: `${activeOD}_${subkey}` };
+  }
+
+  // ── Button badge ───────────────────────────────────────────────────────────
+  const BTN_LABEL = 'AI Seasonality Validation';
+
+  function updateCacheBadge(btn) {
+    if (!btn || btn.classList.contains('rm-ai-btn--loading')) return;
+    const badge = btn.querySelector('.rm-ai-btn__badge');
+    const label = btn.querySelector('.rm-ai-btn__label');
+    let hit = false;
+    try { hit = isCached(buildCacheKey().cacheKey); } catch (e) { /* proshack not ready */ }
+    if (label) label.textContent = BTN_LABEL;
+    if (badge) badge.style.display = hit ? 'inline-flex' : 'none';
+    btn.title = hit ? 'Result cached for today – opens instantly' : 'Runs the analysis (≈ a few minutes)';
+  }
 
 
   function onCounterForecastsClick(btn, target) {
@@ -1616,12 +1662,30 @@ unsafeWindow.proshack.clearStlCache = () => {
     iconEl.className = 'rm-ai-btn__icon';
     iconEl.textContent = icon;
 
-    const text = document.createElement('span');
+    /*const text = document.createElement('span');
     text.textContent = label;
 
     div.appendChild(spinner);
     div.appendChild(iconEl);
+    div.appendChild(text);*/
+
+    const text = document.createElement('span');
+    text.className = 'rm-ai-btn__label';
+    text.textContent = label;
+
+    const badge = document.createElement('span');
+    badge.className = 'rm-ai-btn__badge';
+    badge.textContent = '⚡ cached';
+    badge.style.display = 'none';
+
+    div.appendChild(spinner);
+    div.appendChild(iconEl);
     div.appendChild(text);
+    div.appendChild(badge);
+
+    // Re-check when the user is about to click (filters may have changed)
+    div.addEventListener('mouseenter', () => updateCacheBadge(div));
+    div.addEventListener('focus',      () => updateCacheBadge(div));
 
     div.addEventListener('click', () => onClick(div, target));
     div.addEventListener('keydown', (e) => {
@@ -1661,7 +1725,9 @@ unsafeWindow.proshack.clearStlCache = () => {
       target,
     }));*/
 
+    //target.parentNode.insertBefore(container, target.nextSibling);
     target.parentNode.insertBefore(container, target.nextSibling);
+    updateCacheBadge(container.querySelector('.rm-ai-btn--seasonality'));
   }
 
   // ─── MutationObserver ────────────────────────────────────────────────────────
