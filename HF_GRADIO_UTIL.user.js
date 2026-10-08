@@ -1,8 +1,10 @@
 // ==UserScript==
 // @name         HF Gradio Generic Client
-// @version      2.0
+// @version      3.0
 // @match        *://*/*
 // @grant        GM_xmlhttpRequest
+// @downloadURL  https://github.com/gmartins-tp/scripts/raw/refs/heads/main/HF_GRADIO_UTIL.user.js
+// @updateURL    https://github.com/gmartins-tp/scripts/raw/refs/heads/main/HF_GRADIO_UTIL.user.js
 // ==/UserScript==
 
 (function() {
