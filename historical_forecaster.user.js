@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Historical Forecast - AI Starter
 // @namespace    http://tampermonkey.net/
-// @version      0.12.0
+// @version      0.13.0
 // @description  Validate System Forecasts (Alpha + Lambda): reliability badges, data-quality overview, Booking Curve, Diagnostics
 // @author       Gil Martins
 // @match        https://prod-rm.tp.proscloud.com/market/forecast/*
@@ -17,6 +17,21 @@
 // ==/UserScript==
 
 // ─── STL / YoY Visualiser ───────────────────────────────────────────────────
+// 0.13.0
+//  - new tab "Influence Triage": fast way to look at potential influence problems across all DCP X departure times combinations.
+//  - Time Series: actuals, system and influenced forecasts are drawn as dots. The 28d centred
+//    mean is split by range: black over actuals, red over the system forecast, purple over the
+//    influenced forecast (only where a system forecast exists). Red is drawn over purple.
+//  - Time Series: shade between the system and influenced smoothed lines
+//    (SHOW_INFLUENCE_SHADE) and an "Influence vs system" chip in the title (weighted average).
+//  - Time Series: "Highlight weekday" selector (bigger, stronger dots for that day, others faded)
+//    and "Hide outliers" (on by default; 3×IQR across actual + system + influenced, y-axis from 0).
+//  - Time Series: solid "Today" line, and a grey "Active Management" band for the selected DCP
+//    (today + DyPr End → today + DyPr Start); label hidden from DCP 7 onwards.
+//  - Weekly Seasonality: same DCP band in ISO weeks, split at both ends when it crosses New Year.
+//    The Absolute/Relative toggle moved into the chart's title row.
+//  - Both charts: "Tooltips" tick box in the title row.
+//  - Pop-out window: all text 2px smaller (CSS and Chart.js)
 // 0.12.0
 //  - Methods are ranked 1–5 (most → least trustworthy). The rank is shown as a ladder on
 //    every status strip, in the Data Quality tab (sortable worst-first) and explained in a
@@ -43,12 +58,16 @@
   Chart.defaults.font.size = 11;
   Chart.defaults.color = '#475569';
 
-  const UI_VERSION = '0.12.0';
+  const UI_VERSION = '0.13.0';
 
-  const WEEK_TO_MONTH = {
+  /*const WEEK_TO_MONTH = {
     0: 'Jan', 4: 'Feb', 8: 'Mar', 13: 'Apr', 17: 'May', 21: 'Jun',
     26: 'Jul', 30: 'Aug', 34: 'Sep', 39: 'Oct', 43: 'Nov', 47: 'Dec'
-  };
+  };*/
+  const WEEK_TO_MONTH = {
+  0: 'Jan', 4: 'Feb', 8: 'Mar', 13: 'Apr', 17: 'May', 21: 'Jun',
+  26: 'Jul', 30: 'Aug', 35: 'Sep', 39: 'Oct', 43: 'Nov', 48: 'Dec'
+};
   const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -56,6 +75,9 @@
   const EXCLUDED_CAUTION_SHARE = 0.02;   // share of rows excluded (zero / invalid)
   const CLIPPED_CAUTION_SHARE  = 0.05;   // the backend always clips ~2% by design
   const SMOOTH_WINDOW_DAYS     = 28;     // centred mean on the time-series chart
+
+  const SHOW_INFLUENCE_SHADE = true;                    // false = no shade between system and influenced
+  const INFLUENCE_SHADE_COLOR = 'rgba(100, 116, 139, 0.18)';
 
   // ── DCP windows ───────────────────────────────────────────────────────────
   const DCP_DATA = [
@@ -157,31 +179,31 @@
       rank: 1, short: 'D', label: 'daily STL', level: 'ok',
       what: 'Separates trend, weekly pattern and yearly seasonality directly on the actual daily values. Weekday factors come from real dates.',
       when: 'Nearly daily data: at least 85% of days present, no gap longer than 3 days, every weekday present in each 91-day block, stable flight days, and at least 2 years of history.',
-      effect: 'Band and Booking Curve verdicts are shown normally.'
+      effect: 'Band and DCP demand profile verdicts are shown normally.'
     },
     stl52: {
       rank: 2, short: 'W52', label: 'weekly STL (52 weeks)', level: 'ok',
       what: 'Estimates a weekday factor for each flight day, removes it, then separates trend and yearly seasonality on weekly levels.',
       when: 'Sparse or changing flight days with at least 105 weeks of history: 90+ observed weeks and 8+ observed weeks in every 13-week quarter of the last two years.',
-      effect: 'Band and Booking Curve verdicts are shown normally.'
+      effect: 'Band and DCP demand profile verdicts are shown normally.'
     },
     yoy_one_cycle: {
       rank: 3, short: '1Y', label: 'one-year seasonality', level: 'caution',
       what: 'Copies the seasonal shape of the last 52 weeks, with recent year-on-year growth removed. A one-off event in that year becomes "seasonality".',
       when: '65 to 104 weeks of history with at least 90% of the weeks observed.',
-      effect: 'The band is rough (one year of history). Booking Curve verdicts are marked "Indicative".'
+      effect: 'The band is rough (one year of history). DCP demand profile verdicts are marked "Indicative".'
     },
     borrowed: {
       rank: 4, short: 'B', label: 'borrowed seasonality', level: 'caution',
       what: 'Applies the seasonal shape of a longer series from the same DCP. Level and weekday effects stay the series\' own.',
       when: 'Too little history for the methods above, and a donor series explains at least 25% of the variation with a scale between 0.5 and 1.5.',
-      effect: 'Booking Curve verdicts are marked "Indicative". The donor is named in the status strip.'
+      effect: 'DCP demand profile verdicts are marked "Indicative". The donor is named in the status strip.'
     },
     none: {
       rank: 5, short: '—', label: 'no seasonality separated', level: 'bad',
       what: 'Separates nothing. The trend is a 13-week average and still follows the seasons, so the expected value is wrong in peaks and valleys.',
       when: 'A gap longer than 2 weeks, or too little history and no usable donor.',
-      effect: 'The band is hidden and Booking Curve verdicts are not shown.'
+      effect: 'The band is hidden and DCP demand profile verdicts are not shown.'
     },
     error: { rank: null, short: 'ERR', label: 'error', level: 'bad' }
   };
@@ -438,6 +460,125 @@
     }
   };
 
+ const LABEL_FONT = () => `${Chart.defaults.font.size - 1}px ${Chart.defaults.font.family}`;
+
+// Grey band between two pixel x positions, label centred at the top
+function drawBand(chart, x0, x1, label) {
+  const area = chart.chartArea;
+  x0 = Math.max(x0, area.left);
+  x1 = Math.min(x1, area.right);
+  if (!(x1 > x0)) return;
+  const ctx = chart.ctx;
+  ctx.save();
+  ctx.fillStyle = 'rgba(100, 116, 139, 0.03)';
+  ctx.fillRect(x0, area.top, x1 - x0, area.bottom - area.top);
+  if (label) {
+    ctx.fillStyle = '#475569';
+    ctx.font = LABEL_FONT();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText(label, (x0 + x1) / 2, area.top + 2);
+  }
+  ctx.restore();
+}
+
+// Time Series (time axis): one band from date to date
+const dcpRangePlugin = {
+  id: 'dcpRange',
+  beforeDatasetsDraw(chart) {
+    const w = chart.options?.plugins?.dcpRange?.window;
+    const xs = chart.scales?.x;
+    if (!w || !xs || !chart.chartArea) return;
+    drawBand(chart, xs.getPixelForValue(w.from), xs.getPixelForValue(w.to), w.label);
+  }
+};
+
+// Weekly Seasonality (category axis, index 0 = ISO week 1): one or two bands
+const dcpWeeksPlugin = {
+  id: 'dcpWeeks',
+  beforeDatasetsDraw(chart) {
+    const segs = chart.options?.plugins?.dcpWeeks?.segments;
+    const xs = chart.scales?.x;
+    if (!segs || !segs.length || !xs || !chart.chartArea) return;
+    const half = (xs.getPixelForValue(1) - xs.getPixelForValue(0)) / 2;
+    segs.forEach(s => drawBand(chart,
+      xs.getPixelForValue(s.fromWeek - 1) - half,
+      xs.getPixelForValue(s.toWeek - 1) + half,
+      'Active Range'));
+  }
+};
+
+// Solid vertical line at today, labelled "Today"
+const todayLinePlugin = {
+  id: 'todayLine',
+  afterDatasetsDraw(chart) {
+    const t = chart.options?.plugins?.todayLine?.x;
+    const xs = chart.scales?.x, area = chart.chartArea;
+    if (t == null || !xs || !area || t < xs.min || t > xs.max) return;
+    const x = Math.round(xs.getPixelForValue(t)) + 0.5;
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, area.top);
+    ctx.lineTo(x, area.bottom);
+    ctx.stroke();
+    ctx.fillStyle = '#334155';
+    ctx.font = LABEL_FONT();
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('Today', x + 4, area.top + 2);
+    ctx.restore();
+  }
+};
+
+
+// Bottom of the Weekly Seasonality chart: ISO week numbers, then month brackets
+const MONTH_STARTS = Object.keys(WEEK_TO_MONTH).map(Number).sort((a, b) => a - b);   // week indices
+const MONTH_GAP = 3;          // px left empty at each end of a month line
+const WEEK_ROW_H = 18;        // height of the week-number row
+const seasAxisPlugin = {
+  id: 'seasAxis',
+  afterDraw(chart) {
+    const xs = chart.scales?.x;
+    if (!xs) return;
+    const n = chart.data.labels.length;
+    const step = xs.getPixelForValue(1) - xs.getPixelForValue(0);
+    const half = step / 2;
+    const ctx = chart.ctx;
+    ctx.save();
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+
+    // Week numbers (every 2nd if the chart is narrow)
+    const every = step < 14 ? 2 : 1;
+    ctx.fillStyle = '#94a3b8';
+    ctx.font = `${Chart.defaults.font.size - 2}px ${Chart.defaults.font.family}`;
+    for (let i = 0; i < n; i += every) {
+      ctx.fillText(String(chart.data.labels[i]), xs.getPixelForValue(i), xs.top + 9);
+    }
+
+    // Month lines + names
+    const y = xs.top + WEEK_ROW_H + 6;
+    ctx.strokeStyle = '#94a3b8';
+    ctx.lineWidth = 0.3;
+    ctx.fillStyle = '#64748b';
+    ctx.font = `${Chart.defaults.font.size}px ${Chart.defaults.font.family}`;
+    MONTH_STARTS.forEach((start, k) => {
+      const end = k < MONTH_STARTS.length - 1 ? MONTH_STARTS[k + 1] - 1 : n - 1;
+      const x0 = xs.getPixelForValue(start) - half + MONTH_GAP;
+      const x1 = xs.getPixelForValue(end) + half - MONTH_GAP;
+      ctx.beginPath();
+      ctx.moveTo(x0, y);
+      ctx.lineTo(x1, y);
+      ctx.stroke();
+      ctx.fillText(WEEK_TO_MONTH[start], (x0 + x1) / 2, y + 3);
+    });
+    ctx.restore();
+  }
+};
+
   // ═══════════════════════════════════════════════════════════════════════
   // MODAL RENDERER
   // ═══════════════════════════════════════════════════════════════════════
@@ -497,7 +638,7 @@
           overflow: hidden;
         }
         .stl-modal__header {
-          padding: 14px 20px; border-bottom: 1px solid #e2e8f0;
+          padding: 8px 20px; border-bottom: 1px solid #e2e8f0;
           display: flex; align-items: center; justify-content: space-between;
           background: #f8fafc;
         }
@@ -537,8 +678,8 @@
           border-radius: 0; min-width: 80px; cursor: pointer; border-color: #cbd5e1;
           background: #f1f5f9; font-weight: 500;
         }
-        .stl-toggle-group button:first-child { border-radius: 6px 0 0 6px; border-right: none; }
-        .stl-toggle-group button:last-child { border-radius: 0 6px 6px 0; }
+        .stl-toggle-group button:first-child { border-radius: 4px 0 0 4px; border-right: none; }
+        .stl-toggle-group button:last-child { border-radius: 0 4px 4px 0; }
         .stl-toggle-group button.active { background: #1a73e8; color: #fff; border-color: #1a73e8; }
         .stl-modal__body {
           flex: 1; min-height: 0; overflow-y: auto; padding: 12px 20px;
@@ -645,7 +786,7 @@
         .curve-table th { color: #64748b; font-weight: 600; background: #f8fafc; position: sticky; top: 0; }
         .curve-table td:first-child, .curve-table th:first-child,
         .curve-table td:last-child,  .curve-table th:last-child { text-align: left; }
-        .curve-flag { padding: 2px 8px; border-radius: 10px; font-weight: 600; font-size: 11px; }
+        .curve-flag { padding: 2px 8px; border-radius: 3px; font-weight: 600; font-size: 11px; }
         .curve-flag.high  { background: #fde8e6; color: #b3261e; }
         .curve-flag.warn  { background: #fef3c7; color: #92400e; }
         .curve-flag.ok    { background: #dcfce7; color: #166534; }
@@ -669,7 +810,7 @@
         .stl-banner--warn { background: #fef3c7; color: #92400e; }
         .stl-status {
           display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
-          padding: 6px 10px; border-radius: 6px; font-size: 12px;
+          padding: 6px 10px; border-radius: 4px; font-size: 12px;
           margin-bottom: 8px; border: 1px solid transparent;
         }
         .stl-status--ok      { background: #f0fdf4; border-color: #bbf7d0; color: #166534; }
@@ -680,7 +821,7 @@
         .stl-status__reason--info { color: #64748b; }
         .stl-status__more { text-decoration: underline dotted; cursor: help; }
         .stl-badge {
-          padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 700; white-space: nowrap;
+          padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: 700; white-space: nowrap;
         }
         .stl-badge--ok      { background: #dcfce7; color: #166534; }
         .stl-badge--caution { background: #fef3c7; color: #92400e; }
@@ -697,7 +838,7 @@
         .stl-q th { color: #64748b; font-weight: 600; padding: 2px 6px; text-align: center; }
         .stl-q td.stl-q-row { text-align: right; font-weight: 600; color: #475569; padding-right: 8px; white-space: nowrap; }
         .stl-qcell {
-          min-width: 46px; border: 1px solid transparent; border-radius: 4px; padding: 4px 6px;
+          min-width: 46px; border: 1px solid transparent; border-radius: 3px; padding: 4px 6px;
           font-size: 11px; font-weight: 700; cursor: pointer; font-family: inherit;
         }
         .stl-qcell:hover { box-shadow: 0 0 0 2px rgba(26,115,232,0.35); }
@@ -715,14 +856,14 @@
         /* method ladder + codes + links */
         .stl-ladder { display: inline-flex; gap: 2px; align-items: center; }
         .stl-ladder__step {
-          min-width: 26px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 700;
+          min-width: 26px; padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 700;
           text-align: center; background: #f1f5f9; color: #94a3b8; border: 1px solid #e2e8f0;
         }
         .stl-ladder__step--active.stl-ladder__step--ok      { background: #16a34a; color: #fff; border-color: #16a34a; }
         .stl-ladder__step--active.stl-ladder__step--caution { background: #d97706; color: #fff; border-color: #d97706; }
         .stl-ladder__step--active.stl-ladder__step--bad     { background: #dc2626; color: #fff; border-color: #dc2626; }
         .stl-code {
-          display: inline-block; min-width: 26px; padding: 1px 5px; border-radius: 4px; font-size: 10px;
+          display: inline-block; min-width: 26px; padding: 1px 5px; border-radius: 3px; font-size: 10px;
           font-weight: 700; text-align: center; border: 1px solid transparent;
         }
         .stl-code--ok      { background: #dcfce7; color: #166534; border-color: #bbf7d0; }
@@ -730,7 +871,7 @@
         .stl-code--bad     { background: #fde8e6; color: #b3261e; border-color: #fecaca; }
         .stl-code--unknown { background: #e2e8f0; color: #475569; border-color: #cbd5e1; }
         .stl-link {
-          background: none; border: none; padding: 0; margin-left: auto; font: inherit; font-size: 12px;
+          background: none; border: none; padding: 0; margin-left: auto; font: inherit; font-size: 10px;
           color: #1a73e8; text-decoration: underline; cursor: pointer; min-width: 0;
         }
         .stl-badge--info { background: #f1f5f9; color: #64748b; }
@@ -753,6 +894,53 @@
         .stl-bar__fill--caution { background: #d97706; }
         .stl-bar__fill--bad { background: #dc2626; }
         .stl-bar__fill--unknown { background: #94a3b8; }
+
+        .stl-ts-dow {
+          display: inline-flex; align-items: center; gap: 6px;
+          margin-left: auto;              /* push to the right end of the title row */
+          font-size: 11px; font-weight: 400; color: #475569;
+        }
+        .stl-ts-dow label {
+          font-size: 11px; font-weight: 600; color: #64748b;
+          text-transform: uppercase; letter-spacing: 0.4px;
+        }
+        .stl-ts-dow select {
+          padding: 3px 6px; border: 1px solid #cbd5e1; border-radius: 6px;
+          font-size: 12px; color: #334155; background: #fff;
+        }
+
+        .stl-ts-out {
+          display: inline-flex; align-items: center; gap: 4px; margin-left: 12px;
+          font-size: 12px; font-weight: 400; color: #475569; cursor: pointer;
+        }
+        .stl-ts-out input { margin: 0; cursor: pointer; }
+
+        .stl-seas-scale {
+          display: inline-flex; align-items: center; gap: 6px;
+          margin-left: auto;
+          font-weight: 400;
+        }
+        .stl-seas-scale label {
+          font-size: 11px; font-weight: 600; color: #64748b;
+          text-transform: uppercase; letter-spacing: 0.4px;
+        }
+        .stl-seas-scale .stl-toggle-group button {
+          padding: 3px 10px; min-width: 70px;
+          border: 1px solid #cbd5e1; font-size: 12px; color: #334155;
+        }
+        .stl-seas-scale .stl-toggle-group button.active {
+          background: #1a73e8; color: #fff; border-color: #1a73e8;
+        }
+
+        .stl-ts-inf {
+          margin-left: 8px; padding: 1px 8px; border-radius: 3px;
+          font-size: 11px; font-weight: 600;
+          background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0;
+        }
+        .stl-ts-inf--zero { color: #94a3b8; font-weight: 500; }
+
+        .stl-triage tr:not(:first-child) { cursor: pointer; }
+        .stl-triage tr:not(:first-child):hover td { background: #f8fafc; }
       `;
       document.head.appendChild(css);
     }
@@ -774,7 +962,8 @@
         <div class="stl-meta" id="stl-meta"></div>
         <div class="stl-modal__tabs">
           <button class="stl-tab active" data-tab="time-series">Time Series &amp; Seasonality</button>
-          <button class="stl-tab" data-tab="booking-curve">Booking Curve</button>
+          <button class="stl-tab" data-tab="booking-curve">DCP Demand Profile</button>
+          <button class="stl-tab" data-tab="triage">Influence Triage</button>
           <button class="stl-tab" data-tab="quality">Data Quality</button>
           <button class="stl-tab" data-tab="guide">Reliability Guide</button>
           <button class="stl-tab" data-tab="diagnostics">Diagnostics</button>
@@ -797,13 +986,7 @@
             <label>Departure Time</label>
             <select id="stl-select-dep">${allDeps.map(d => `<option value="${esc(d)}">${esc(depLabel(d))}</option>`).join('')}</select>
           </div>
-          <div class="stl-control" id="stl-ctl-scale" style="margin-left:auto;">
-            <label>Seasonality Scale</label>
-            <div class="stl-toggle-group" id="stl-scale-toggle">
-              <button class="active" data-mode="absolute">Absolute</button>
-              <button data-mode="relative">Relative</button>
-            </div>
-          </div>
+          
         </div>
         <div class="stl-modal__body">
           <!-- TAB 1: Time Series & Seasonality -->
@@ -814,7 +997,15 @@
               <div class="stl-chart-wrap"><canvas id="stl-chart-ts"></canvas></div>
             </div>
             <div class="stl-chart-box">
-              <div class="stl-chart-box__title">Weekly Seasonality <span id="seas-subtitle"></span></div>
+              <div class="stl-chart-box__title">Weekly Seasonality <span id="seas-subtitle"></span>
+                <div class="stl-seas-scale">
+                  <label>Scale</label>
+                  <div class="stl-toggle-group" id="stl-scale-toggle">
+                    <button class="active" data-mode="absolute">Absolute</button>
+                    <button data-mode="relative">Relative</button>
+                  </div>
+                </div>
+              </div>
               <div id="seas-status"></div>
               <div class="stl-chart-wrap"><canvas id="stl-chart-seas"></canvas></div>
               <div class="stl-note" id="seas-note"></div>
@@ -823,7 +1014,7 @@
           <!-- TAB 2: Booking Curve -->
           <div class="stl-tab-panel" data-panel="booking-curve">
             <div class="stl-chart-box">
-              <div class="stl-chart-box__title">Booking Curve Profile <span id="curve-subtitle"></span></div>
+              <div class="stl-chart-box__title">DCP Demand Profile <span id="curve-subtitle"></span></div>
               <div id="curve-status"></div>
               <div class="curve-controls">
                 <div class="stl-control">
@@ -848,6 +1039,13 @@
                 Assessments are marked "Indicative" for Caution series and not shown for Unreliable series.
               </div>
               <div style="overflow-x:auto;"><table class="curve-table" id="stl-curve-table"></table></div>
+            </div>
+          </div>
+          <!-- TAB: Influence Triage -->
+          <div class="stl-tab-panel" data-panel="triage">
+            <div class="stl-chart-box">
+              <div class="stl-chart-box__title">Influence Triage <span>— every influenced series, most urgent first</span></div>
+              <div id="triage-wrap"></div>
             </div>
           </div>
           <!-- TAB 3: Data Quality -->
@@ -901,6 +1099,11 @@
     let chartSeas = null;
     let chartResid = null;
     let scaleMode = 'absolute';
+    let highlightDow = '';   // '' = none, '0'..'6' = Mon..Sun
+    let hideOutliers = true;
+    let tsBounds = null;   // { lo, hi, hidden } for the current Time Series chart
+    let tsTips = false;     // Time Series tooltips
+    let seasTips = true;   // Weekly Seasonality tooltips
     let analysisType = 'lambda';
     if (hasBothTypes && !Object.keys(byDcpLambda).length && Object.keys(byDcpAlpha).length) {
       analysisType = 'alpha';
@@ -927,6 +1130,73 @@
     const elCurveScale = modalEl.querySelector('#stl-curve-scale');
     const elCurveLog   = modalEl.querySelector('#stl-curve-log');
     const elCurveTable = modalEl.querySelector('#stl-curve-table');
+
+
+    // Weekday highlight: lives inside the Time Series box (specific to that chart)
+    const tsTitle = tsCanvas.closest('.stl-chart-box').querySelector('.stl-chart-box__title');
+    const dowBar = mk('div', 'stl-ts-dow');
+    dowBar.appendChild(mk('label', null, 'Highlight weekday'));
+    const elTsDow = mk('select');
+    const optNone = mk('option', null, 'None');
+    optNone.value = '';
+    elTsDow.appendChild(optNone);
+    WEEKDAYS.forEach((d, i) => {
+      const o = mk('option', null, d);
+      o.value = String(i);
+      elTsDow.appendChild(o);
+    });
+    dowBar.appendChild(elTsDow);
+    tsTitle.appendChild(dowBar);   // same line as "Time Series — LAMBDA · DCP 6 · …"
+
+    elTsDow.addEventListener('change', () => {
+      highlightDow = elTsDow.value;
+      if (chartTs) chartTs.update('none');
+    });
+
+    //outliers switch
+    const outWrap = mk('label', 'stl-ts-out');
+    const elTsOut = mk('input');
+    elTsOut.type = 'checkbox';
+    elTsOut.checked = hideOutliers;   // tick the checkbox with the value
+    const outText = mk('span', null, 'Hide outliers');
+    outWrap.appendChild(elTsOut);
+    outWrap.appendChild(outText);
+    tsTitle.appendChild(outWrap);
+    elTsOut.addEventListener('change', () => {
+      hideOutliers = elTsOut.checked;
+      applyTsRange();
+    });  
+
+
+    // Reusable tick box in a chart title row (same style as "Hide outliers")
+    function addTick(titleEl, text, checked, onChange) {
+      const wrap = mk('label', 'stl-ts-out');
+      const box = mk('input');
+      box.type = 'checkbox';
+      box.checked = checked;
+      wrap.appendChild(box);
+      wrap.appendChild(mk('span', null, text));
+      titleEl.appendChild(wrap);
+      box.addEventListener('change', () => onChange(box.checked));
+      return box;
+    }
+
+    const setTips = (chart, on) => {
+      if (!chart) return;
+      chart.options.plugins.tooltip.enabled = on;
+      chart.update('none');
+    };
+
+    addTick(tsTitle, 'Tooltips', tsTips, on => { tsTips = on; setTips(chartTs, on); });
+
+    const seasTitle = seasCanvas.closest('.stl-chart-box').querySelector('.stl-chart-box__title');
+    addTick(seasTitle, 'Tooltips', seasTips, on => { seasTips = on; setTips(chartSeas, on); });
+
+
+    //today line
+    const elTsInf = mk('span', 'stl-ts-inf');
+    tsTitle.insertBefore(elTsInf, dowBar);   // right after the subtitle, before the controls
+
 
     function showChartMessage(canvas, text) {
       const wrap = canvas.parentElement;
@@ -1052,6 +1322,44 @@
       slot.appendChild(strip);
     }
 
+
+const DAY = 86400000;
+function todayUtc() {
+  const n = new Date();
+  return Date.UTC(n.getFullYear(), n.getMonth(), n.getDate());
+}
+// Selected DCP's managed dates: today + DyPr End → today + DyPr Start (inclusive)
+function dcpWindow() {
+  const info = DCP_DATA.find(x => x.DCP === +elDcp.value);
+  if (!info) return null;
+  const t = todayUtc();
+  return {
+    first: t + info['DyPr End'] * DAY,     // first managed day
+    last:  t + info['DyPr Start'] * DAY,   // last managed day
+    from:  t + info['DyPr End'] * DAY,
+    to:    t + (info['DyPr Start'] + 1) * DAY,   // end of the last day (time axis)
+    label: 'Active Range'
+  };
+}
+// Same window as ISO-week segments; splits in two when it crosses New Year
+function dcpWeekSegments() {
+  const w = dcpWindow();
+  if (!w) return [];
+  const iso = ms => isoWeekYear(new Date(ms).toISOString().slice(0, 10));
+  const a = iso(w.first), b = iso(w.last);
+  if (a.year === b.year) return [{ fromWeek: a.week, toWeek: b.week }];
+  return [{ fromWeek: a.week, toWeek: 53 }, { fromWeek: 1, toWeek: b.week }];
+}        
+
+    function applyTsRange() {
+      if (!chartTs) return;
+      const y = chartTs.options.scales.y;
+      const on = hideOutliers && tsBounds;
+      y.min = 0;
+      y.max = on ? tsBounds.hi : undefined;
+      chartTs.update('none');
+    }
+
     // ─── Time-Series Chart ───────────────────────────────────────────────────
     function renderTs() {
       const d = getData();
@@ -1069,6 +1377,9 @@
         return;
       }
       hideChartMessage(tsCanvas);
+
+      const RED    = '214, 52, 56';    // was 254, 85, 87
+      const PURPLE = '116, 60, 220';   // was 148, 92, 249
 
       const toMs = (arr) => (arr || []).map(s => new Date(s).getTime());
       const histDates = toMs(d.historical?.dates);
@@ -1115,9 +1426,22 @@
         else { const f = fMap.get(t); if (f !== undefined) v = fVals[f]; }
         return { x: t, y: v == null ? null : v / factorAt(t) };
       });
+      //const half = SMOOTH_WINDOW_DAYS / 2;
+      //const dsCombinedSmooth = calendarMean(combined(sysFcMap, sysFcValues), half);
+      //const dsCombinedInfSmooth = calendarMean(combined(infFcMap, infFcValues), half);
+      
       const half = SMOOTH_WINDOW_DAYS / 2;
-      const dsCombinedSmooth = calendarMean(combined(sysFcMap, sysFcValues), half);
-      const dsCombinedInfSmooth = calendarMean(combined(infFcMap, infFcValues), half);
+      const sysSmoothAll = calendarMean(combined(sysFcMap, sysFcValues), half);
+      const infSmoothAll = calendarMean(combined(infFcMap, infFcValues), half);
+      const keepIf = (arr, test) => arr.map(p => test(p.x) ? p : { x: p.x, y: null });
+
+      // Black: actuals range only
+      const dsActualSmooth = keepIf(sysSmoothAll, t => histMap.has(t));
+      // Red: system forecast range only
+      const dsSysSmooth    = keepIf(sysSmoothAll, t => !histMap.has(t) && sysFcMap.has(t));
+      // Purple: forecast range only, and only where a system forecast exists
+      const dsInfSmooth    = keepIf(infSmoothAll, t => !histMap.has(t) && sysFcMap.has(t) && infFcMap.has(t));
+
       const smoothTag = `${SMOOTH_WINDOW_DAYS}d centred mean${dowF ? ', weekday-adjusted' : ''}`;
 
       // Trend before the regime-shift adjustment + the window that was adjusted
@@ -1131,22 +1455,69 @@
         if (first >= 0 && histDates.length) regimeWindow = { from: histDates[first], to: histDates[histDates.length - 1] };
       }
 
+      // Mon = 0 … Sun = 6, same convention as the weekday factors
+      const dowOf = (t) => (new Date(t).getUTCDay() + 6) % 7;
+      const dotRadius = (base, big) => (ctx) =>
+        (highlightDow !== '' && ctx.raw && dowOf(ctx.raw.x) === +highlightDow) ? big : base;
+
+      const OPACITY_DOTS = 0.15
+      const OPACITY_HI = Math.min(1, OPACITY_DOTS * 2.4);   // 0.6 with your 0.2
+      const OPACITY_LO = OPACITY_DOTS * 0.23;             // 0.05 with your 0.2
+
+      const isHi = (ctx) => highlightDow !== '' && ctx.raw && dowOf(ctx.raw.x) === +highlightDow;
+      const dotColor = (rgb) => (ctx) => {
+        if (highlightDow === '') return `rgba(${rgb}, ${OPACITY_DOTS})`;   // no highlight: as now
+        return `rgba(${rgb}, ${isHi(ctx) ? OPACITY_HI : OPACITY_LO})`;
+      };
+
+
+      // Influence vs system over the forecast dates where both exist (same idea as the Booking Curve)
+      let sumSys = 0, sumInf = 0, nInf = 0;
+      allDates.forEach(t => {
+        const s = sysFcMap.get(t), i = infFcMap.get(t);
+        if (s === undefined || i === undefined) return;
+        const sv = sysFcValues[s], iv = infFcValues[i];
+        if (sv == null || iv == null || !Number.isFinite(sv) || !Number.isFinite(iv)) return;
+        sumSys += sv; sumInf += iv; nInf++;
+      });
+      const infPct = nInf && sumSys ? sumInf / sumSys - 1 : null;
+      elTsInf.textContent = infPct == null ? '' : `Avg Influence vs system: ${fmtPct(infPct)}`;
+      elTsInf.title = infPct == null ? '' : `Sum of influenced ÷ sum of system forecast − 1, over ${nInf} forecast dates`;
+      elTsInf.style.display = infPct == null ? 'none' : '';
+      elTsInf.classList.toggle('stl-ts-inf--zero', infPct != null && Math.abs(infPct) < 0.005);
+
       const datasets = [
-        { label: 'Actual', data: dsActual,
-          borderColor: 'rgb(173, 216, 230)', backgroundColor: 'rgba(173, 216, 230, 0.2)',
-          borderWidth: 2, pointRadius: 0, spanGaps: false, order: 5 },
-        { label: 'System Forecast', data: dsSysForecast,
-          borderColor: 'rgba(234, 67, 53, 0.3)', backgroundColor: 'transparent',
-          borderWidth: 2, pointRadius: 0, spanGaps: false, order: 4 },
-        { label: 'Influenced Forecast', data: dsInfForecast,
-          borderColor: 'rgba(137, 80, 196, 0.3)', backgroundColor: 'transparent',
-          borderWidth: 2, pointRadius: 0, spanGaps: false, order: 3 },
-        { label: `Actual + System Forecast (${smoothTag})`, data: dsCombinedSmooth,
-          borderColor: 'rgba(3, 3, 3, 0.55)', backgroundColor: 'transparent',
-          borderWidth: 3, pointRadius: 0, spanGaps: false, order: 1 },
-        { label: `Actual + Influenced Forecast (${smoothTag})`, data: dsCombinedInfSmooth,
-          borderColor: 'rgba(90, 40, 140, 0.85)', backgroundColor: 'transparent',
-          borderWidth: 3, pointRadius: 0, spanGaps: false, order: 0 },
+       
+        { label: 'Actual', data: dsActual, showLine: false,
+          pointRadius: dotRadius(1.5, 3.5), pointHoverRadius: 4, pointBorderWidth: 0,
+          pointBackgroundColor: dotColor('0, 0, 0'),
+          borderColor: `rgba(0, 0, 0, ${OPACITY_DOTS})`,
+          backgroundColor: `rgba(0, 0, 0, ${OPACITY_DOTS})`, order: 5 },
+        { label: 'System Forecast', data: dsSysForecast, showLine: false,
+          pointRadius: dotRadius(1.5, 3.5), pointHoverRadius: 4, pointBorderWidth: 0,
+          pointBackgroundColor: dotColor(RED),
+          borderColor: `rgba(${RED}, ${OPACITY_DOTS})`,
+          backgroundColor: `rgba(${RED}, ${OPACITY_DOTS})`, order: 3 },
+        { label: 'Influenced Forecast', data: dsInfForecast, showLine: false,
+          pointRadius: dotRadius(1.5, 3.5), pointHoverRadius: 4, pointBorderWidth: 0,
+          pointBackgroundColor: dotColor(PURPLE),
+          borderColor: `rgba(${PURPLE}, ${OPACITY_DOTS})`,
+          backgroundColor: `rgba(${PURPLE}, ${OPACITY_DOTS})`, order: 4 },
+        { label: `Actual (${smoothTag})`, data: dsActualSmooth,
+          borderColor: 'rgb(0, 0, 0)', backgroundColor: 'transparent',
+          borderWidth: 2.5, pointRadius: 0, order: 1 },
+        /*{ label: `System Forecast (${smoothTag})`, data: dsSysSmooth,
+          borderColor: `rgb(${RED})`, backgroundColor: 'transparent',
+          borderWidth: 2.5, pointRadius: 0, order: 1 },
+        { label: `Influenced Forecast (${smoothTag})`, data: dsInfSmooth,
+          borderColor: `rgb(${PURPLE})`, backgroundColor: 'transparent',
+          borderWidth: 2.5, pointRadius: 0, order: 0 },*/
+        { _role: 'sysSmooth', label: `System Forecast (${smoothTag})`, data: dsSysSmooth,
+          borderColor: `rgb(${RED})`, backgroundColor: 'transparent',
+          borderWidth: 2.5, pointRadius: 0, fill: false, order: 0 },
+        { _role: 'infSmooth', label: `Influenced Forecast (${smoothTag})`, data: dsInfSmooth,
+          borderColor: `rgb(${PURPLE})`, backgroundColor: `rgb(${PURPLE})`,
+          borderWidth: 2.5, pointRadius: 0, fill: false, order: 1 },
         { label: 'Historical Trend', data: dsTrend,
           borderColor: 'rgb(0, 128, 0)', backgroundColor: 'transparent',
           borderWidth: 2, pointRadius: 0, spanGaps: false, order: 2 },
@@ -1164,19 +1535,62 @@
       // series. Connect across them instead of leaving isolated, invisible points.
       datasets.forEach(d => { d.spanGaps = true; });
 
+      // Shade between influenced and system smoothed lines
+      if (SHOW_INFLUENCE_SHADE) {
+        const sysIdx = datasets.findIndex(d => d._role === 'sysSmooth');
+        const inf = datasets.find(d => d._role === 'infSmooth');
+        if (sysIdx >= 0 && inf) {
+          inf.fill = { target: sysIdx, above: INFLUENCE_SHADE_COLOR, below: INFLUENCE_SHADE_COLOR };
+        }
+      }
+
+      // outliers code
+      // Robust y-range across actual + system + influenced (3×IQR fences)
+      const finite = arr => (arr || []).map(p => p.y).filter(v => v != null && Number.isFinite(v));
+      const quant = (s, p) => {
+        const i = (s.length - 1) * p, a = Math.floor(i), b = Math.ceil(i);
+        return s[a] + (s[b] - s[a]) * (i - a);
+      };
+      const raw = [...finite(dsActual), ...finite(dsSysForecast), ...finite(dsInfForecast)].sort((a, b) => a - b);
+      const lineVals = [...finite(dsActualSmooth), ...finite(dsSysSmooth), ...finite(dsInfSmooth),
+                        ...finite(dsTrend), ...finite(dsForecast)];
+      tsBounds = null;
+      if (raw.length >= 10) {
+        const q1 = quant(raw, 0.25), q3 = quant(raw, 0.75), iqr = q3 - q1, K = 3;
+        let lo = Math.max(q1 - K * iqr, raw[0]);
+        let hi = Math.min(q3 + K * iqr, raw[raw.length - 1]);
+        if (lineVals.length) {                       // never cut the smoothed / trend lines
+          lo = Math.min(lo, Math.min(...lineVals));
+          hi = Math.max(hi, Math.max(...lineVals));
+        }
+        const pad = (hi - lo) * 0.03;
+        tsBounds = { lo: 0, hi: hi + pad, hidden: raw.filter(v => v > hi).length };
+      }
+      outText.textContent = tsBounds && tsBounds.hidden ? `Hide outliers (${tsBounds.hidden})` : 'Hide outliers';
+      elTsOut.disabled = !tsBounds;
+      //end outliers code
+
+
       chartTs = new Chart(tsCanvas.getContext('2d'), {
         type: 'line',
         data: { datasets },
-        plugins: [regimeShadePlugin],
+        plugins: [regimeShadePlugin, dcpRangePlugin, todayLinePlugin],
         options: {
           responsive: true,
           maintainAspectRatio: false,
           devicePixelRatio: hostWin().devicePixelRatio || 1,
           interaction: { mode: 'index', intersect: false },
           plugins: {
+            dcpRange: { window: (() => {
+              const w = dcpWindow();
+              if (w && +elDcp.value >= 7) w.label = '';   // no label from DCP 7 onwards (Time Series only)
+              return w;
+            })() },
+            todayLine: { x:todayUtc() },
             regimeShade: { window: regimeWindow },
             legend: { position: 'top', labels: { usePointStyle: true, boxWidth: 8 } },
             tooltip: {
+              enabled: tsTips,
               callbacks: {
                 title: (items) => {
                   const ts = items[0]?.parsed?.x;
@@ -1192,8 +1606,10 @@
               ticks: { maxRotation: 90, minRotation: 90, autoSkip: false },
               grid: { display: false }
             },
-            y: { title: { display: true, text: 'Value' }, grid: { color: '#f1f5f9' } }
-          }
+            y: { title: { display: true, text: 'Value' }, grid: { color: '#f1f5f9' },
+                  min: 0,
+                  max: hideOutliers && tsBounds ? tsBounds.hi : undefined },
+                        }
         }
       });
     }
@@ -1257,6 +1673,7 @@
 
       chartSeas = new Chart(seasCanvas.getContext('2d'), {
         type: 'line',
+        plugins: [dcpWeeksPlugin, seasAxisPlugin],
         data: {
           labels: weeks,
           datasets: [
@@ -1265,9 +1682,9 @@
               backgroundColor: 'rgba(26, 115, 232, 0.20)', spanGaps: false },
             { label: 'Historical Mean', data: histMeanArr, borderColor: 'rgb(26, 115, 232)',
               backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, spanGaps: false, order: 3 },
-            { label: 'Forecast Derived', data: fcMeanArr, borderColor: 'rgb(234, 67, 53)',
+            { label: 'Forecast Derived', data: fcMeanArr, borderColor: 'rgb(254, 85, 87)',
               backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, spanGaps: false, order: 2 },
-            { label: 'Influenced Derived', data: infMeanArr, borderColor: 'rgb(137, 80, 196)',
+            { label: 'Influenced Derived', data: infMeanArr, borderColor: 'rgb(148, 92, 249)',
               backgroundColor: 'transparent', borderWidth: 2, pointRadius: 2, spanGaps: false, order: 1 }
           ]
         },
@@ -1277,6 +1694,7 @@
           interaction: { mode: 'index', intersect: false },
           devicePixelRatio: hostWin().devicePixelRatio || 1,
           plugins: {
+            dcpWeeks: { segments: dcpWeekSegments() },
             legend: {
               position: 'top',
               labels: {
@@ -1285,6 +1703,7 @@
               }
             },
             tooltip: {
+              enabled: seasTips,
               filter: (ctx) => {
                 const lbl = ctx.dataset.label;
                 return !lbl.includes('Hist lower') && !lbl.includes('Hist upper');
@@ -1293,10 +1712,11 @@
           },
           scales: {
             x: {
-              title: { display: true, text: 'ISO Week' },
-              ticks: { callback: (value, index) => WEEK_TO_MONTH[index] || '', autoSkip: false, maxRotation: 0 },
-              grid: { display: false }
-            },
+                ticks: { display: false },                                // drawn by the plugin
+                afterFit: (scale) => { scale.height = WEEK_ROW_H + 26; }, // room for both rows
+                grid: { display: false },
+                border: { display: true }                                 // chart baseline
+              },
             y: {
               title: { display: true, text: scaleMode === 'relative' ? 'Relative Seasonal Effect' : 'Seasonal Effect' },
               grid: { color: '#f1f5f9' }
@@ -1898,6 +2318,134 @@
       wrap.appendChild(tooltip);
     }
 
+// ═══════════════════════════════════════════════════════════════════════
+// INFLUENCE TRIAGE — based on the Weekly Seasonality band (trend removed)
+// ═══════════════════════════════════════════════════════════════════════
+const TRIAGE_MIN_INFLUENCE = 0.005;   // hide series with |influence| < 0.5%
+const TRIAGE_K = 1.5;                 // |z| above this = outside the band (blue band = 1σ) Use 2 if it flags too much, or 1 to match the blue band exactly.
+const VERDICT = {
+  out:  { rank: 0, cls: 'high',  text: 'Influence moves outside band' },
+  both: { rank: 1, cls: 'warn',  text: 'Both outside band' },
+  back: { rank: 2, cls: 'ok',    text: 'Influence brings back into band' },
+  in:   { rank: 3, cls: 'ok',    text: 'Within band' },
+  na:   { rank: 4, cls: 'muted', text: 'Not assessed' }
+};
+const wkMap = (obj, field) => {
+  const m = {};
+  if (obj?.weeks) obj.weeks.forEach((w, i) => { m[w] = obj[field]?.[i]; });
+  return m;
+};
+
+function triageRows(type) {
+  const store = storeFor(type);
+  const rows = [];
+  allDeps.forEach(dep => allDcps.forEach(dcp => {
+    const d = store[`dcp${dcp}_${dep}`];
+    if (!d || d.error) return;
+
+    // Influence % on the raw forecasts (same as the Time Series chip)
+    const sysM = new Map((d.system_forecast?.dates || []).map((t, i) => [t, d.system_forecast.values[i]]));
+    let sS = 0, sI = 0;
+    (d.influenced_forecast?.dates || []).forEach((t, i) => {
+      const s = sysM.get(t), v = d.influenced_forecast.values[i];
+      if (Number.isFinite(s) && Number.isFinite(v)) { sS += s; sI += v; }
+    });
+    if (!sS) return;
+    const infPct = sI / sS - 1;
+    if (Math.abs(infPct) < TRIAGE_MIN_INFLUENCE) return;
+
+    const assess = assessFor(type, dcp, dep);
+    const root = d.relative_weekly_seasonality || d.weekly_seasonality;   // relative = comparable across series
+    const mean = wkMap(root?.historical, 'mean'), sd = wkMap(root?.historical, 'std');
+    const fc = wkMap(root?.forecast_derived, 'mean'), inf = wkMap(root?.influenced_derived, 'mean');
+
+    let worst = VERDICT.na, nWorst = 0, nWeeks = 0, maxZ = null, maxShift = 0;
+    if (assess.level !== 'bad') {
+      Object.keys(inf).forEach(w => {
+        const m = mean[w], s = sd[w], iv = inf[w], sv = fc[w];
+        if (m == null || !(s > 0) || iv == null || sv == null) return;
+        nWeeks++;
+        const zi = (iv - m) / s, zs = (sv - m) / s;
+        const oi = Math.abs(zi) > TRIAGE_K, os = Math.abs(zs) > TRIAGE_K;
+        const v = oi ? (os ? VERDICT.both : VERDICT.out) : (os ? VERDICT.back : VERDICT.in);
+        if (v.rank < worst.rank) { worst = v; nWorst = 0; }
+        if (v === worst) nWorst++;
+        if (maxZ == null || Math.abs(zi) > Math.abs(maxZ)) maxZ = zi;
+        maxShift = Math.max(maxShift, Math.abs(zi - zs));
+      });
+    }
+    rows.push({ dep, dcp, assess, infPct, nWeeks, maxZ, maxShift, worst, nWorst,
+                indicative: assess.level === 'caution' || assess.level === 'unknown' });
+  }));
+  return rows.sort((a, b) =>
+    (a.worst.rank - b.worst.rank) ||
+    (b.maxShift - a.maxShift) ||
+    (LEVEL_ORDER[a.assess.level] - LEVEL_ORDER[b.assess.level]) ||
+    (Math.abs(b.infPct) - Math.abs(a.infPct)));
+}
+
+function renderTriage() {
+  const wrap = modalEl.querySelector('#triage-wrap');
+  wrap.innerHTML = '';
+  const type = curType();
+  const name = type === 'alpha' ? 'Alpha' : type === 'lambda' ? 'Lambda' : 'Series';
+  if (type && errors[type]) {
+    wrap.appendChild(mk('div', 'stl-banner stl-banner--bad', `${name} analysis failed: ${errors[type]}`));
+    return;
+  }
+  const rows = triageRows(type);
+  wrap.appendChild(mk('div', 'stl-q-counts',
+    `${name}: ${rows.length} influenced series (|influence| ≥ ${(TRIAGE_MIN_INFLUENCE * 100).toFixed(1)}%). Click a row to open it.`));
+  if (!rows.length) return;
+
+  const table = mk('table', 'curve-table stl-triage');
+  const head = mk('tr');
+  ['#', 'Departure time', 'DCP', 'Influence vs system', 'Max |z| influenced',
+   'Max shift by influence (σ)', 'Weeks', 'Series', 'Worst week verdict']
+    .forEach(h => head.appendChild(mk('th', null, h)));
+  table.appendChild(head);
+
+  rows.forEach((r, i) => {
+    const tr = mk('tr');
+    [String(i + 1), depLabel(r.dep), `DCP ${r.dcp}`, fmtPct(r.infPct),
+     r.maxZ == null ? '—' : r.maxZ.toFixed(1),
+     r.nWeeks ? r.maxShift.toFixed(1) : '—',
+     String(r.nWeeks)]
+      .forEach(c => tr.appendChild(mk('td', null, c)));
+
+    const tq = mk('td');
+    const badge = mk('span', `stl-badge stl-badge--${r.assess.level}`, r.assess.label);
+    badge.title = r.assess.reasons.map(x => x.text).join('\n') || 'No issues detected';
+    tq.appendChild(badge);
+    if (r.assess.rank) {
+      const m = METHODS[r.assess.method];
+      const c = mk('span', `stl-code stl-code--${m.level}`, m.short);
+      c.title = `Method ${r.assess.rank} of ${METHOD_ORDER.length}: ${m.label}`;
+      c.style.marginLeft = '6px';
+      tq.appendChild(c);
+    }
+    tr.appendChild(tq);
+
+    const ind = r.indicative && r.worst !== VERDICT.na;
+    const tf = mk('td');
+    tf.appendChild(mk('span', `curve-flag ${r.worst.cls}${ind ? ' indicative' : ''}`,
+      `${ind ? 'Indicative · ' : ''}${r.worst.text}${r.nWeeks && r.worst !== VERDICT.na ? ` (${r.nWorst} wk)` : ''}`));
+    tr.appendChild(tf);
+
+    tr.addEventListener('click', () => goToSeries(type, r.dcp, r.dep));
+    table.appendChild(tr);
+  });
+
+  const holder = mk('div');
+  holder.style.overflowX = 'auto';
+  holder.appendChild(table);
+  wrap.appendChild(holder);
+  wrap.appendChild(mk('div', 'stl-note',
+    `Uses the Weekly Seasonality band (trend and weekday effect removed). z = (derived − historical mean) ÷ historical σ per ISO week; ` +
+    `"outside" = |z| > ${TRIAGE_K}. Shift = how many σ the influence moved the week vs the system forecast. ` +
+    'Unreliable series are not assessed; Caution series are indicative.'));
+}
+
     // ═══════════════════════════════════════════════════════════════════════
     // TAB 2: BOOKING CURVE
     // ═══════════════════════════════════════════════════════════════════════
@@ -2117,7 +2665,8 @@
       show('#stl-ctl-type', !noSelectors);
       show('#stl-ctl-dcp', name === 'time-series' || name === 'diagnostics');
       show('#stl-ctl-dep', !noSelectors);
-      show('#stl-ctl-scale', name === 'time-series');
+      show('#stl-ctl-dep', !noSelectors && name !== 'triage');
+      //show('#stl-ctl-scale', name === 'time-series');
     }
 
     function selectTab(name) {
@@ -2128,6 +2677,7 @@
       if (name === 'booking-curve') { populateCurveWeeks(); renderCurve(); }
       if (name === 'quality') renderQuality();
       if (name === 'guide') renderGuide();
+      if (name === 'triage') renderTriage();
       hostWin().requestAnimationFrame(refreshCharts);
     }
     tabs.forEach(tab => tab.addEventListener('click', () => selectTab(tab.dataset.tab)));
@@ -2147,6 +2697,7 @@
       }
       if (isPanelActive('quality')) renderQuality();
       if (isPanelActive('guide')) renderGuide();
+      if (isPanelActive('triage')) renderTriage();
     }
 
     elDcp.addEventListener('change', updateAll);
@@ -2246,8 +2797,24 @@
 
       const pdoc = popWin.document;
       pdoc.title = 'Seasonality YoY Analysis';
+      //const css = document.getElementById('rm-stl-modal-styles');
+      //if (css) pdoc.head.appendChild(css.cloneNode(true));
+
+      // reduce popup css font BY 2PX
+      const POPUP_FONT_DELTA = 2;   // px removed from every font-size in the pop-out
       const css = document.getElementById('rm-stl-modal-styles');
-      if (css) pdoc.head.appendChild(css.cloneNode(true));
+      if (css) {
+        const clone = css.cloneNode(true);
+        clone.textContent = clone.textContent.replace(
+          /font-size:\s*(\d+(?:\.\d+)?)px/g,
+          (_, n) => `font-size: ${Math.max(8, parseFloat(n) - POPUP_FONT_DELTA)}px`
+        );
+        pdoc.head.appendChild(clone);
+      }
+      // Chart.js draws on canvas, so CSS doesn't reach it (legends, axes, tooltips)
+      Chart.defaults.font.size = 11 - POPUP_FONT_DELTA;
+      //END
+
       pdoc.body.style.cssText = 'margin:0; overflow:hidden; font-family:-apple-system,"Segoe UI",Roboto,helvetica,sans-serif;';
       pdoc.documentElement.style.fontSize = getComputedStyle(document.documentElement).fontSize;
 
@@ -2264,6 +2831,7 @@
 
       popWin.addEventListener('pagehide', () => {
         popWin = null;
+        Chart.defaults.font.size = 11;   
         if (closing) return;
         destroyCharts();
         modalEl.style.cssText = '';
@@ -2901,3 +3469,4 @@
   }
 
 })();
+
