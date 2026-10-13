@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Historical Forecast - AI Starter
 // @namespace    http://tampermonkey.net/
-// @version      0.13.0
+// @version      0.14.0
 // @description  Validate System Forecasts (Alpha + Lambda): reliability badges, data-quality overview, Booking Curve, Diagnostics
 // @author       Gil Martins
 // @match        https://prod-rm.tp.proscloud.com/market/forecast/*
@@ -17,6 +17,9 @@
 // ==/UserScript==
 
 // ─── STL / YoY Visualiser ───────────────────────────────────────────────────
+// 0.14.0
+//  - Breaking changes with previous UI versions due to the way alpha is computed in the backend
+//  - Reduced SMOOTH_WINDOW_DAYS centered mean to 8 days (closer to weekly agg patterns) and added a second 4 days pass for smoothness
 // 0.13.0
 //  - new tab "Influence Triage": fast way to look at potential influence problems across all DCP X departure times combinations.
 //  - Time Series: actuals, system and influenced forecasts are drawn as dots. The 28d centred
@@ -58,23 +61,25 @@
   Chart.defaults.font.size = 11;
   Chart.defaults.color = '#475569';
 
-  const UI_VERSION = '0.13.0';
+  const UI_VERSION = '0.14.0';
 
   /*const WEEK_TO_MONTH = {
     0: 'Jan', 4: 'Feb', 8: 'Mar', 13: 'Apr', 17: 'May', 21: 'Jun',
     26: 'Jul', 30: 'Aug', 34: 'Sep', 39: 'Oct', 43: 'Nov', 47: 'Dec'
-  };*/
+  };
   const WEEK_TO_MONTH = {
-  0: 'Jan', 4: 'Feb', 8: 'Mar', 13: 'Apr', 17: 'May', 21: 'Jun',
-  26: 'Jul', 30: 'Aug', 35: 'Sep', 39: 'Oct', 43: 'Nov', 48: 'Dec'
-};
+    0: 'Jan', 4: 'Feb', 8: 'Mar', 13: 'Apr', 17: 'May', 21: 'Jun',
+    26: 'Jul', 30: 'Aug', 35: 'Sep', 39: 'Oct', 43: 'Nov', 48: 'Dec'
+  };*/
   const WEEKDAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
   const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
   // Heuristic thresholds for the reliability level. Tune on real ODs.
   const EXCLUDED_CAUTION_SHARE = 0.02;   // share of rows excluded (zero / invalid)
   const CLIPPED_CAUTION_SHARE  = 0.05;   // the backend always clips ~2% by design
-  const SMOOTH_WINDOW_DAYS     = 28;     // centred mean on the time-series chart
+  const SMOOTH_WINDOW_DAYS     = 8;     // centred mean on the time-series chart
+  const SMOOTH_SIGMA_DAYS = 2;   // Gaussian σ in days. Lower = sharper peaks, higher = smoother
+  const SMOOTH_PASS2_DAYS = 4; // 2nd pass over the mean; 0 = off
 
   const SHOW_INFLUENCE_SHADE = true;                    // false = no shade between system and influenced
   const INFLUENCE_SHADE_COLOR = 'rgba(100, 116, 139, 0.18)';
@@ -98,6 +103,7 @@
     {DCP:15, "DyPr Start":1,   "DyPr End":1,   "Length (days)":1},
     {DCP:16, "DyPr Start":0,   "DyPr End":0,   "Length (days)":1}
   ];
+
 
   // ═══════════════════════════════════════════════════════════════════════
   // MODULE-SCOPE HELPERS
@@ -167,6 +173,29 @@
       while (hi < n && points[hi].x <= p.x + half) hi++;
       const cnt = prefCnt[hi] - prefCnt[lo];
       return { x: p.x, y: cnt ? (prefSum[hi] - prefSum[lo]) / cnt : null };
+    });
+  }
+
+  // Gaussian-weighted centred mean over a CALENDAR window (points sorted by x, ms).
+  // Weights fade smoothly with distance, so a day entering/leaving the window
+  // does not make the line jump (the box mean does). Output only where input has a value.
+  function calendarGauss(points, sigmaDays) {
+    const sigma = sigmaDays * 86400000;
+    const reach = 3 * sigma;                 // beyond 3σ the weight is negligible
+    const n = points.length;
+    let lo = 0;
+    return points.map((p, i) => {
+      if (p.y == null || !Number.isFinite(p.y)) return { x: p.x, y: null };
+      while (lo < n && points[lo].x < p.x - reach) lo++;
+      let sw = 0, swy = 0;
+      for (let j = lo; j < n && points[j].x <= p.x + reach; j++) {
+        const v = points[j].y;
+        if (v == null || !Number.isFinite(v)) continue;
+        const z = (points[j].x - p.x) / sigma;
+        const w = Math.exp(-0.5 * z * z);
+        sw += w; swy += w * v;
+      }
+      return { x: p.x, y: sw ? swy / sw : null };
     });
   }
 
@@ -534,49 +563,71 @@ const todayLinePlugin = {
 };
 
 
-// Bottom of the Weekly Seasonality chart: ISO week numbers, then month brackets
-const MONTH_STARTS = Object.keys(WEEK_TO_MONTH).map(Number).sort((a, b) => a - b);   // week indices
-const MONTH_GAP = 3;          // px left empty at each end of a month line
-const WEEK_ROW_H = 18;        // height of the week-number row
-const seasAxisPlugin = {
-  id: 'seasAxis',
-  afterDraw(chart) {
-    const xs = chart.scales?.x;
-    if (!xs) return;
-    const n = chart.data.labels.length;
-    const step = xs.getPixelForValue(1) - xs.getPixelForValue(0);
-    const half = step / 2;
-    const ctx = chart.ctx;
-    ctx.save();
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'top';
+// 0-based column index (ISO week − 1) where each month starts, for one ISO year.
+// A week belongs to the month its Thursday falls in (ISO convention).
+function monthStartWeeks(isoYear) {
+  const out = [];
+  for (let m = 0; m < 12; m++) {
+    const d = new Date(Date.UTC(isoYear, m, 1));
+    d.setUTCDate(1 + ((4 - d.getUTCDay() + 7) % 7));            // first Thursday of the month
+    out.push(isoWeekYear(d.toISOString().slice(0, 10)).week - 1);
+  }
+  return out;
+}
 
-    // Week numbers (every 2nd if the chart is narrow)
-    const every = step < 14 ? 2 : 1;
-    ctx.fillStyle = '#94a3b8';
-    ctx.font = `${Chart.defaults.font.size - 2}px ${Chart.defaults.font.family}`;
-    for (let i = 0; i < n; i += every) {
-      ctx.fillText(String(chart.data.labels[i]), xs.getPixelForValue(i), xs.top + 9);
+    // Month starts for the current ISO year (computed once per year, not on every redraw)
+    let monthStartsCache = { year: null, starts: null };
+    function currentMonthStarts() {
+      const year = isoWeekYear(new Date().toISOString().slice(0, 10)).year;
+      if (monthStartsCache.year !== year) monthStartsCache = { year, starts: monthStartWeeks(year) };
+      return monthStartsCache.starts;
     }
 
-    // Month lines + names
-    const y = xs.top + WEEK_ROW_H + 6;
-    ctx.strokeStyle = '#94a3b8';
-    ctx.lineWidth = 0.3;
-    ctx.fillStyle = '#64748b';
-    ctx.font = `${Chart.defaults.font.size}px ${Chart.defaults.font.family}`;
-    MONTH_STARTS.forEach((start, k) => {
-      const end = k < MONTH_STARTS.length - 1 ? MONTH_STARTS[k + 1] - 1 : n - 1;
-      const x0 = xs.getPixelForValue(start) - half + MONTH_GAP;
-      const x1 = xs.getPixelForValue(end) + half - MONTH_GAP;
-      ctx.beginPath();
-      ctx.moveTo(x0, y);
-      ctx.lineTo(x1, y);
-      ctx.stroke();
-      ctx.fillText(WEEK_TO_MONTH[start], (x0 + x1) / 2, y + 3);
-    });
-    ctx.restore();
-  }
+    // Bottom of the Weekly Seasonality chart: ISO week numbers, then month brackets
+    const MONTH_GAP  = 6;     // px left empty at each end of a month line
+    const WEEK_ROW_H = 18;    // height of the week-number row
+    const seasAxisPlugin = {
+      id: 'seasAxis',
+      afterDraw(chart) {
+        const xs = chart.scales?.x;
+        if (!xs) return;
+        const n = chart.data.labels.length;                      // 53 columns
+        const step = xs.getPixelForValue(1) - xs.getPixelForValue(0);
+        const half = step / 2;
+        const ctx = chart.ctx;
+        ctx.save();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+
+        // Row 1: week numbers (every 2nd if the chart is narrow)
+        const every = step < 14 ? 2 : 1;
+        ctx.fillStyle = '#94a3b8';
+        ctx.font = `${Chart.defaults.font.size - 2}px ${Chart.defaults.font.family}`;
+        for (let i = 0; i < n; i += every) {
+          ctx.fillText(String(chart.data.labels[i]), xs.getPixelForValue(i), xs.top + 8);
+        }
+
+        // Row 2: one line per month, name centred below it
+        const starts = currentMonthStarts();
+        const y = xs.top + WEEK_ROW_H + 4;
+        ctx.strokeStyle = '#94a3b8';
+        ctx.lineWidth = 0.5;
+        ctx.fillStyle = '#64748b';
+        ctx.font = `${Chart.defaults.font.size}px ${Chart.defaults.font.family}`;
+        starts.forEach((start, k) => {
+          const end = k < 11 ? starts[k + 1] - 1 : n - 1;        // December runs to the last column
+          const x0 = xs.getPixelForValue(start) - half + MONTH_GAP;
+          const x1 = xs.getPixelForValue(end) + half - MONTH_GAP;
+          if (!(x1 > x0)) return;
+          ctx.beginPath();
+          ctx.moveTo(x0, y);
+          ctx.lineTo(x1, y);
+          ctx.stroke();
+          ctx.fillText(MONTHS[k], (x0 + x1) / 2, y + 3);
+        });
+        ctx.restore();
+      }
+    
 };
 
   // ═══════════════════════════════════════════════════════════════════════
@@ -810,7 +861,7 @@ const seasAxisPlugin = {
         .stl-banner--warn { background: #fef3c7; color: #92400e; }
         .stl-status {
           display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
-          padding: 6px 10px; border-radius: 4px; font-size: 12px;
+          padding: 6px 10px; border-radius: 4px; font-size: 0.8em;
           margin-bottom: 8px; border: 1px solid transparent;
         }
         .stl-status--ok      { background: #f0fdf4; border-color: #bbf7d0; color: #166534; }
@@ -1430,9 +1481,24 @@ function dcpWeekSegments() {
       //const dsCombinedSmooth = calendarMean(combined(sysFcMap, sysFcValues), half);
       //const dsCombinedInfSmooth = calendarMean(combined(infFcMap, infFcValues), half);
       
+      //const half = SMOOTH_WINDOW_DAYS / 2;
+      //const sysSmoothAll = calendarMean(combined(sysFcMap, sysFcValues), half);
+      //const infSmoothAll = calendarMean(combined(infFcMap, infFcValues), half);
+      
+      //const sysSmoothAll = calendarGauss(combined(sysFcMap, sysFcValues), SMOOTH_SIGMA_DAYS);
+      //const infSmoothAll = calendarGauss(combined(infFcMap, infFcValues), SMOOTH_SIGMA_DAYS);
+      
       const half = SMOOTH_WINDOW_DAYS / 2;
-      const sysSmoothAll = calendarMean(combined(sysFcMap, sysFcValues), half);
-      const infSmoothAll = calendarMean(combined(infFcMap, infFcValues), half);
+      // 2nd light pass over the already-smoothed line: removes the small spikes
+   
+      const smooth = pts => {
+        const first = calendarMean(pts, half);
+        return SMOOTH_PASS2_DAYS > 0 ? calendarMean(first, SMOOTH_PASS2_DAYS / 2) : first;
+      };
+      const sysSmoothAll = smooth(combined(sysFcMap, sysFcValues));
+      const infSmoothAll = smooth(combined(infFcMap, infFcValues));
+
+
       const keepIf = (arr, test) => arr.map(p => test(p.x) ? p : { x: p.x, y: null });
 
       // Black: actuals range only
@@ -1442,7 +1508,10 @@ function dcpWeekSegments() {
       // Purple: forecast range only, and only where a system forecast exists
       const dsInfSmooth    = keepIf(infSmoothAll, t => !histMap.has(t) && sysFcMap.has(t) && infFcMap.has(t));
 
-      const smoothTag = `${SMOOTH_WINDOW_DAYS}d centred mean${dowF ? ', weekday-adjusted' : ''}`;
+      //const smoothTag = `${SMOOTH_WINDOW_DAYS}d centred mean${dowF ? ', weekday-adjusted' : ''}`;
+      //const smoothTag = `Gaussian σ=${SMOOTH_SIGMA_DAYS}d${dowF ? ', weekday-adjusted' : ''}`;
+      const smoothTag = `${SMOOTH_WINDOW_DAYS}d mean + ${SMOOTH_PASS2_DAYS}d${dowF ? ', weekday-adjusted' : ''}`;
+
 
       // Trend before the regime-shift adjustment + the window that was adjusted
       const regimeOn = !!(d.regime_shift && d.regime_shift.detected && Array.isArray(d.historical?.stl_trend_original));
@@ -1978,7 +2047,6 @@ function dcpWeekSegments() {
     // ═══════════════════════════════════════════════════════════════════════
     // TAB 5: DIAGNOSTICS — Heatmap + Residuals + Quadrant
     // ═══════════════════════════════════════════════════════════════════════
-
     function renderHeatmap() {
       const wrap = modalEl.querySelector('#heatmap-wrap');
       const dc = doc();
@@ -2869,7 +2937,7 @@ function renderTriage() {
     }
     .rm-ai-btn {
       display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px;
-      font-size: 13px; font-family: inherit; cursor: pointer; user-select: none;
+      font-size: 12px; font-family: inherit; cursor: pointer; user-select: none;
       transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
       border: 1px solid transparent; white-space: nowrap;
       width: 100%; height: 40px; border-radius: 4px;
@@ -2883,8 +2951,11 @@ function renderTriage() {
     .rm-ai-btn__icon { font-size: 14px; line-height: 1; }
     .rm-ai-btn__spinner {
       display: none; width: 12px; height: 12px;
-      border: 2px solid rgba(0,0,0,0.4); border-top-color: #000; border-radius: 50%;
-      animation: rm-spin 0.6s linear infinite;
+      border-radius: 50%;
+      border: 8px solid;
+      border-color: #000 #0000;
+      animation: l1 1s infinite;
+
     }
     .rm-ai-btn--loading .rm-ai-btn__spinner { display: block; }
     .rm-ai-btn--loading .rm-ai-btn__icon { display: none; }
@@ -2892,7 +2963,7 @@ function renderTriage() {
       margin-left: auto; align-items: center; padding: 2px 8px; border-radius: 1px;
       font-size: 12px; font-weight: 600; background: #dcfce7; color: #166534; border: 1px solid #86efac;
     }
-    @keyframes rm-spin { to { transform: rotate(360deg); } }
+   @keyframes l1 {to{transform: rotate(.5turn)}}
   `;
 
   function injectStyles() {
@@ -3058,7 +3129,9 @@ function renderTriage() {
         forecast_flag_col: "is_forecast",
         max_dcp: 13,
         damp_factor: "auto",
-        bypass_dampener: false
+        bypass_dampener: false,
+        lambda_col: "Final Lambda Seasonal",              
+        influenced_lambda_col: "Final Lambda Influenced"  
       };
 
       const pollOpts = (name) => ({
@@ -3122,7 +3195,7 @@ function renderTriage() {
   // to the page on load, and above 64 MiB injection fails for EVERY script.
   const CACHE_DB      = 'rm-ai-stl-cache';
   const CACHE_STORE   = 'results';
-  const CACHE_VERSION = 'v4';          // bump after backend / result-format changes
+  const CACHE_VERSION = 'v6';          // bump after backend / result-format changes
   const cachedKeys    = new Set();     // in-memory index → synchronous badge checks
   let indexDay = null;
 
